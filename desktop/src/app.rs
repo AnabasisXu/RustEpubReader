@@ -227,6 +227,7 @@ fn discover_system_fonts() -> (
     }
 
     let mut font_map = HashMap::new();
+    let mut chosen_style: HashMap<String, String> = HashMap::new();
     let mut cjk = std::collections::HashSet::new();
     for path in files {
         let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
@@ -271,12 +272,24 @@ fn discover_system_fonts() -> (
                 if name.is_empty() {
                     continue;
                 }
-                font_map
-                    .entry(name.clone())
-                    .or_insert_with(|| crate::system_fonts::SystemFont {
-                        path: path_string.clone(),
-                        index: face.index,
-                    });
+                let regular = |style: &str| {
+                    style.is_empty()
+                        || style.eq_ignore_ascii_case("Regular")
+                        || style.eq_ignore_ascii_case("Roman")
+                };
+                let replace = chosen_style
+                    .get(&name)
+                    .is_some_and(|existing| !regular(existing) && regular(&face.style));
+                if chosen_style.get(&name).is_none() || replace {
+                    font_map.insert(
+                        name.clone(),
+                        crate::system_fonts::SystemFont {
+                            path: path_string.clone(),
+                            index: face.index,
+                        },
+                    );
+                    chosen_style.insert(name.clone(), face.style.clone());
+                }
                 if face.has_cjk {
                     cjk.insert(name);
                 }

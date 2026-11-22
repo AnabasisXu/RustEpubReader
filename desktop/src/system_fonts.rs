@@ -35,6 +35,7 @@ pub(crate) struct FaceInfo {
     pub index: u32,
     pub family: String,
     pub localized: Option<String>,
+    pub style: String,
     pub has_cjk: bool,
 }
 
@@ -62,6 +63,7 @@ pub(crate) fn font_faces(path: &str) -> Vec<FaceInfo> {
         };
         let mut family = None;
         let mut localized = None;
+        let mut style = String::new();
         for name in face.names() {
             let Some(text) = name.to_string() else {
                 continue;
@@ -70,6 +72,9 @@ pub(crate) fn font_faces(path: &str) -> Vec<FaceInfo> {
                 && family.is_none()
             {
                 family = Some(text.clone());
+            }
+            if name.name_id == ttf_parser::name_id::SUBFAMILY && style.is_empty() {
+                style = text.clone();
             }
             if localized.is_none()
                 && text
@@ -89,6 +94,7 @@ pub(crate) fn font_faces(path: &str) -> Vec<FaceInfo> {
             index,
             family,
             localized,
+            style,
             has_cjk,
         });
     }
