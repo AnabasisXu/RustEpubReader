@@ -4,13 +4,10 @@ use reader_core::epub::EpubBook;
 
 impl ReaderApp {
     pub fn open_book_from_path(&mut self, path: &str, chapter: Option<usize>) {
-        if self.backup.busy() {
-            return;
-        }
         if self.pending_book_open.is_some() {
             return;
         }
-        if let Err(error) = self.flush_reading_position_for_backup() {
+        if let Err(error) = self.flush_reading_position() {
             self.error_msg = Some(error);
             return;
         }
@@ -98,7 +95,6 @@ impl ReaderApp {
         {
             self.pending_batch_import = None;
             self.reload_library();
-            self.cloud_invalidate_journal();
             if !errors.is_empty() {
                 self.error_msg = Some(errors.join("\n"));
             }
@@ -158,7 +154,6 @@ impl ReaderApp {
                     ch = ch.min(book.chapters.len() - 1);
                 }
 
-                self.cloud_journal_init();
                 let initial_title = book.title.clone();
                 let initial_chapter_title = book.chapters.get(ch).map(|c| c.title.clone());
                 let mut entry = match self.library.add_or_update(
@@ -202,7 +197,6 @@ impl ReaderApp {
                         return;
                     };
                     entry = current;
-                    self.cloud_invalidate_journal();
                 }
 
                 if let Err(error) = self.library.set_last_opened(
@@ -212,7 +206,6 @@ impl ReaderApp {
                 ) {
                     self.error_msg = Some(error.to_string());
                 };
-                self.cloud_record_recent();
 
                 let font_names: Vec<String> =
                     book.fonts.iter().map(|(name, _)| name.clone()).collect();
@@ -257,6 +250,7 @@ impl ReaderApp {
                 // Load annotation config and start reading timer
                 self.book_config =
                     reader_core::library::Library::read_book_config(&self.data_dir, &entry.id);
+                self.backfill_highlight_text();
                 self.load_reader_navigation();
 
                 self.push_feedback_log(format!(
@@ -266,21 +260,51 @@ impl ReaderApp {
                     self.embedded_font_names.len(),
                     entry.path
                 ));
-                // Trigger CSC correction for current + adjacent chapters
-                self.csc_cache.clear();
-                self.csc_trigger_chapter(ch);
-                let total = self.total_chapters();
-                if ch > 0 {
-                    self.csc_trigger_chapter(ch - 1);
-                }
-                if ch + 1 < total {
-                    self.csc_trigger_chapter(ch + 1);
-                }
             }
             Err(e) => {
                 self.push_feedback_log(format!("[Book] ERROR opening {}: {}", path, e));
                 self.error_msg = Some(e);
             }
+        }
+    }
+}
+
+impl ReaderApp {
+    /// Older highlights stored no excerpt; fill it from the chapter text once.
+    fn backfill_highlight_text(&mut self) {
+        let Some(book) = self.book.as_ref() else {
+            return;
+        };
+        let Some(cfg) = self.book_config.as_mut() else {
+            return;
+        };
+        let mut changed = false;
+        for highlight in &mut cfg.highlights {
+            if !highlight.text.trim().is_empty() {
+                continue;
+            }
+            let Some(chapter) = book.chapters.get(highlight.chapter) else {
+                continue;
+            };
+            let text: String = match chapter.blocks.get(highlight.start_block) {
+                Some(reader_core::epub::ContentBlock::Heading { spans, .. })
+                | Some(reader_core::epub::ContentBlock::Paragraph { spans, .. }) => {
+                    spans.iter().map(|span| span.text.as_str()).collect()
+                }
+                _ => continue,
+            };
+            let excerpt: String = text
+                .chars()
+                .skip(highlight.start_offset)
+                .take(highlight.end_offset.saturating_sub(highlight.start_offset))
+                .collect();
+            if !excerpt.is_empty() {
+                highlight.text = excerpt;
+                changed = true;
+            }
+        }
+        if changed {
+            let _ = cfg.save(&self.data_dir);
         }
     }
 }

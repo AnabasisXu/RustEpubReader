@@ -355,7 +355,7 @@ pub(crate) fn styled_paint(
                 if let Some(oldest) = cache
                     .entries
                     .iter()
-                    .filter(|(_, entry)| entry.pass.saturating_add(1) < pass)
+                    .filter(|(id, entry)| *id != &key && entry.pass.saturating_add(1) < pass)
                     .min_by_key(|(_, e)| e.used)
                     .map(|(&id, _)| id)
                 {
@@ -364,7 +364,9 @@ pub(crate) fn styled_paint(
                     break;
                 }
             }
-            cache.entries.get_mut(&key).unwrap().texture = texture;
+            if let Some(entry) = cache.entries.get_mut(&key) {
+                entry.texture = texture;
+            }
         }
         let entry = cache.entries.get_mut(&key).unwrap();
         entry.used = cache.clock;

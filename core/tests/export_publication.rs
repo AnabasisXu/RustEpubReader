@@ -1,7 +1,7 @@
 use reader_core::{
     epub::{ContentBlock, EpubBook},
     export::{export_book, ExportMode},
-    library::{BookConfig, CorrectionRecord},
+    library::BookConfig,
     txt,
 };
 use serde_json::json;
@@ -22,32 +22,8 @@ fn config(path: &str) -> BookConfig {
     serde_json::from_value(json!({"id":"audit","title":"Export audit","epub_path":path,"last_chapter":0,"last_opened":0,"created_at":0,"updated_at":0})).unwrap()
 }
 #[test]
-fn rebuilt_export_applies_accepted_corrections_and_preserves_all_media() {
+fn rebuilt_export_preserves_all_media_and_leaves_sources_untouched() {
     let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("sample.txt");
-    std::fs::write(&path, "第一章 开始\n原文需要校正。").unwrap();
-    let original = txt::convert_txt_to_epub(&path, dir.path(), &Default::default()).unwrap();
-    let original_bytes = std::fs::read(&original.epub_path).unwrap();
-    let book = EpubBook::open(&original.epub_path).unwrap();
-    let block=book.chapters[0].blocks.iter().position(|b|matches!(b,ContentBlock::Paragraph{spans,..} if spans.iter().any(|s|s.text.contains("原文")))).unwrap();
-    let mut cfg = config(original.epub_path.to_str().unwrap());
-    cfg.corrections.push(CorrectionRecord {
-        chapter: 0,
-        block_idx: block,
-        char_offset: 0,
-        original: "原".into(),
-        corrected: "新".into(),
-        status: "accepted".into(),
-    });
-    let corrected = dir.path().join("corrected.epub");
-    export_book(
-        original.epub_path.to_str().unwrap(),
-        corrected.to_str().unwrap(),
-        &cfg,
-        ExportMode::WithCorrections,
-    )
-    .unwrap();
-    let actual = content(&EpubBook::open(&corrected).unwrap());
     let fixture =
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/illustrations.epub");
     let fixture_bytes = std::fs::read(&fixture).unwrap();
@@ -70,13 +46,8 @@ fn rebuilt_export_applies_accepted_corrections_and_preserves_all_media() {
     )
     .unwrap();
     let images_after = count_images(&EpubBook::open(&rebuilt).unwrap(), &rebuilt);
-    let source_unmodified = std::fs::read(&original.epub_path).unwrap() == original_bytes
-        && std::fs::read(&fixture).unwrap() == fixture_bytes;
-    assert!(source_unmodified);
-    assert!(actual.contains("新文需要校正"), "{actual}");
     assert_eq!(images_before, images_after);
-    let report = json!({"source_unmodified":source_unmodified,"diagnostic_execution":"completed","accepted_correction_written":actual.contains("新文需要校正"),"uncorrected_text_remains":actual.contains("原文需要校正"),"source_image_blocks":images_before,"rebuilt_image_blocks":images_after,"validation_scope":"synthetic_core_regression"});
-    println!("{report}");
+    assert_eq!(std::fs::read(&fixture).unwrap(), fixture_bytes);
 }
 
 fn resources(path: &std::path::Path) -> std::collections::BTreeMap<String, Vec<u8>> {
@@ -116,14 +87,6 @@ fn full_export_preserves_inline_markup_resources_and_unicode_annotations() {
     let book = EpubBook::open(&source).unwrap();
     let block=book.chapters[0].blocks.iter().position(|b|matches!(b,ContentBlock::Paragraph{spans,..} if spans.iter().map(|s|s.text.as_str()).collect::<String>().starts_with("原文"))).unwrap();
     let mut cfg = config(source.to_str().unwrap());
-    cfg.corrections.push(CorrectionRecord {
-        chapter: 0,
-        block_idx: block,
-        char_offset: 0,
-        original: "原文".into(),
-        corrected: "新文".into(),
-        status: "accepted".into(),
-    });
     cfg.highlights.push(Highlight {
         id: "h1".into(),
         chapter: 0,
@@ -133,7 +96,7 @@ fn full_export_preserves_inline_markup_resources_and_unicode_annotations() {
         end_offset: 4,
         color: HighlightColor::Blue,
         created_at: 1,
-    });
+     text: String::new(), tags: Vec::new(),});
     cfg.notes.push(Note {
         highlight_id: "h1".into(),
         content: "笔记 <script>evil</script> & 😀".into(),
@@ -176,35 +139,18 @@ fn full_export_preserves_inline_markup_resources_and_unicode_annotations() {
     assert!(html.contains("&lt;script&gt;evil&lt;/script&gt;"));
     assert!(html.contains("background-color:#cce5ff"));
     let result = content(&EpubBook::open(&destination).unwrap());
-    assert!(result.contains("新文"), "{result}");
+    assert!(result.contains("原文"), "{result}");
     assert!(result.contains("😀"));
     assert_eq!(before, resources(&source));
 }
 #[test]
-fn stale_corrections_never_create_partial_output_or_overwrite_sources() {
+fn exporting_over_the_source_is_rejected_without_modifying_it() {
     let dir = tempfile::tempdir().unwrap();
     let text = dir.path().join("book.txt");
     std::fs::write(&text, "第一章\n原文保留。").unwrap();
     let epub = txt::convert_txt_to_epub(&text, dir.path(), &Default::default()).unwrap();
     let before = std::fs::read(&epub.epub_path).unwrap();
-    let mut cfg = config(epub.epub_path.to_str().unwrap());
-    cfg.corrections.push(CorrectionRecord {
-        chapter: 0,
-        block_idx: 999,
-        char_offset: 0,
-        original: "原".into(),
-        corrected: "新".into(),
-        status: "accepted".into(),
-    });
-    let destination = dir.path().join("bad.epub");
-    assert!(export_book(
-        epub.epub_path.to_str().unwrap(),
-        destination.to_str().unwrap(),
-        &cfg,
-        ExportMode::Full
-    )
-    .is_err());
-    assert!(!destination.exists());
+    let cfg = config(epub.epub_path.to_str().unwrap());
     assert!(export_book(
         epub.epub_path.to_str().unwrap(),
         epub.epub_path.to_str().unwrap(),

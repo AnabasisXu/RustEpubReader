@@ -1,5 +1,5 @@
 //! Portable GitHub sync format. Remote data never contains local paths or credentials.
-use crate::sharing::ProgressEntry;
+use crate::cloud_progress::ProgressEntry;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 

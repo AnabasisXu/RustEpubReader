@@ -1,5 +1,34 @@
 //! The Desktop application state machine, defining main app logic.
+/// 可配置快捷键：action -> 组合键写法，如 "Ctrl+B"、"F2"、"Alt+1"。
+pub(crate) fn default_shortcuts() -> std::collections::BTreeMap<String, String> {
+    let mut map = std::collections::BTreeMap::new();
+    for (name, spec) in [
+        ("annotations", "Ctrl+B"),
+        ("library", "Ctrl+W"),
+        ("open", "Ctrl+O"),
+        ("search", "Ctrl+F"),
+        ("toc", "Ctrl+T"),
+        ("settings", "Ctrl+,"),
+        ("highlight", "Ctrl+A"),
+        ("notes_search", "Ctrl+Shift+F"),
+        ("notes_page", "F9"),
+        ("tag_focus", "Alt+T"),
+        ("bookmark", "Ctrl+M"),
+        ("quick_open", "F10"),
+        ("vim_mode", "Alt+V"),
+        ("undo_highlight", "Ctrl+Z"),
+        ("export_notes", "Alt+E"),
+        ("ai_panel", "Alt+L"),
+        ("font_smaller", "Ctrl+-"),
+        ("font_larger", "Ctrl+="),
+    ] {
+        map.insert(name.to_string(), spec.to_string());
+    }
+    map
+}
+
 mod opening;
+mod keymap;
 mod settings;
 mod shortcuts;
 use settings::AppSettings;
@@ -9,11 +38,7 @@ use std::fmt::Write as _;
 #[cfg(not(target_os = "macos"))]
 use std::path::Path;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-
-/// (device_code, user_code, interval, expires_in)
-pub type DeviceCodeResult = Result<(String, String, u64, u64), String>;
 
 use eframe::egui;
 use egui::Color32;
@@ -21,7 +46,6 @@ use egui::Color32;
 use reader_core::epub::EpubBook;
 use reader_core::i18n::{I18n, Language};
 use reader_core::library::Library;
-use reader_core::sharing::{start_listener, DiscoveredPeer, PeerStore};
 
 use crate::ui::reader_state::ContinuousScrollState;
 
@@ -30,10 +54,10 @@ type FontDiscoveryResult = Arc<
         Option<(
             Vec<String>,
             HashMap<String, crate::system_fonts::SystemFont>,
+            std::collections::HashSet<String>,
         )>,
     >,
 >;
-pub(crate) type TtsAudioResultSlot = Arc<Mutex<Option<Result<Vec<u8>, String>>>>;
 
 type PendingBookOpen = (
     String,
@@ -47,54 +71,6 @@ fn extend_unique_font_chain(target: &mut Vec<String>, fonts: impl IntoIterator<I
             target.push(font);
         }
     }
-}
-
-/// Push a debug log entry from anywhere (including background threads).
-/// Writes to both the in-memory feedback_logs buffer and stderr (when debug logging is enabled).
-pub fn dbg_log(logs: &Arc<Mutex<Vec<String>>>, msg: impl AsRef<str>) {
-    let ts = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
-    let line = format!("[{ts}] {}", msg.as_ref());
-    if reader_core::sharing::is_debug_logging_enabled() {
-        eprintln!("[DBG] {line}");
-    }
-    if let Ok(mut v) = logs.lock() {
-        v.push(line);
-        if v.len() > 600 {
-            let remove = v.len().saturating_sub(600);
-            v.drain(0..remove);
-        }
-    }
-}
-
-/// Work item sent to the CSC background worker thread.
-pub struct CscWork {
-    pub chapter: usize,
-    pub blocks: Vec<(usize, String)>,
-    pub mode: reader_core::csc::CorrectionMode,
-    pub threshold: reader_core::csc::CscThreshold,
-}
-
-/// Result returned from the CSC background worker thread.
-pub struct CscResult {
-    pub chapter: usize,
-    pub corrections: Vec<(usize, Vec<reader_core::epub::CorrectionInfo>)>,
-}
-
-/// State for the CSC correction popup (accept / revert / ignore).
-#[derive(Clone)]
-pub struct CscPopupInfo {
-    pub chapter: usize,
-    pub block_idx: usize,
-    pub char_offset: usize,
-    pub original: String,
-    pub corrected: String,
-    pub confidence: f32,
-    pub pos: egui::Pos2,
-    /// Skip "click outside to close" on the frame the popup was just opened.
-    pub just_opened: bool,
 }
 
 fn default_data_dir() -> String {
@@ -157,6 +133,7 @@ fn default_sans() -> String {
 fn discover_system_fonts() -> (
     Vec<String>,
     HashMap<String, crate::system_fonts::SystemFont>,
+    std::collections::HashSet<String>,
 ) {
     // 已知字体文件 stem → 人性化显示名（优先匹配，避免显示 "msyh" 之类的文件名）
     let known_names: HashMap<&str, &str> = [
@@ -222,6 +199,9 @@ fn discover_system_fonts() -> (
     #[cfg(target_os = "windows")]
     {
         roots.push(PathBuf::from("C:\\Windows\\Fonts"));
+        if let Ok(local) = std::env::var("LOCALAPPDATA") {
+            roots.push(PathBuf::from(local).join("Microsoft\\Windows\\Fonts"));
+        }
     }
     #[cfg(target_os = "linux")]
     {
@@ -248,41 +228,75 @@ fn discover_system_fonts() -> (
     }
 
     let mut font_map = HashMap::new();
+    let mut cjk = std::collections::HashSet::new();
     for path in files {
         let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
             continue;
         };
-        // 优先用已知友好名，否则对文件名做简单清理
-        let name = if let Some(&friendly) = known_names.get(stem) {
-            friendly.to_string()
-        } else {
+        let friendly = known_names.get(stem).copied();
+        let path_string = path.to_string_lossy().to_string();
+        let faces = crate::system_fonts::font_faces(&path_string);
+        if faces.is_empty() {
             let cleaned = stem.replace(['_', '-'], " ").trim().to_string();
             if cleaned.is_empty() {
                 continue;
             }
-            cleaned
-        };
-        font_map
-            .entry(name)
-            .or_insert_with(|| crate::system_fonts::SystemFont {
-                path: path.to_string_lossy().to_string(),
-                index: 0,
-            });
+            let is_cjk = is_cjk_font_name(&cleaned);
+            font_map
+                .entry(cleaned.clone())
+                .or_insert_with(|| crate::system_fonts::SystemFont {
+                    path: path_string.clone(),
+                    index: 0,
+                });
+            if is_cjk {
+                cjk.insert(cleaned);
+            }
+            continue;
+        }
+        let face_count = faces.len();
+        for face in faces {
+            let display = if face_count > 1 {
+                format!("{} #{}", face.family, face.index + 1)
+            } else {
+                face.family.clone()
+            };
+            let mut aliases = vec![display];
+            if let Some(localized) = face.localized {
+                aliases.push(localized);
+            }
+            if let Some(friendly) = friendly {
+                aliases.push(friendly.to_string());
+            }
+            for name in aliases {
+                let name = name.trim().to_string();
+                if name.is_empty() {
+                    continue;
+                }
+                font_map
+                    .entry(name.clone())
+                    .or_insert_with(|| crate::system_fonts::SystemFont {
+                        path: path_string.clone(),
+                        index: face.index,
+                    });
+                if face.has_cjk {
+                    cjk.insert(name);
+                }
+            }
+        }
     }
 
     // CJK 字体排前面，其余按字母升序
-    let is_cjk = is_cjk_font_name;
     let mut names: Vec<String> = font_map.keys().cloned().collect();
     names.sort_by(|a, b| {
-        let a_cjk = is_cjk(a);
-        let b_cjk = is_cjk(b);
+        let a_cjk = cjk.contains(a) || is_cjk_font_name(a);
+        let b_cjk = cjk.contains(b) || is_cjk_font_name(b);
         match (a_cjk, b_cjk) {
             (true, false) => std::cmp::Ordering::Less,
             (false, true) => std::cmp::Ordering::Greater,
             _ => a.to_ascii_lowercase().cmp(&b.to_ascii_lowercase()),
         }
     });
-    (names, font_map)
+    (names, font_map, cjk)
 }
 
 fn default_anim_speed() -> f32 {
@@ -305,28 +319,28 @@ fn default_text_indent() -> u8 {
 fn discover_system_fonts() -> (
     Vec<String>,
     HashMap<String, crate::system_fonts::SystemFont>,
+    std::collections::HashSet<String>,
 ) {
     let fonts = crate::system_fonts::discover();
     let mut names: Vec<_> = fonts.keys().cloned().collect();
     names.sort_by_key(|name| (!is_cjk_font_name(name), name.to_lowercase()));
-    (names, fonts)
+    let cjk = names
+        .iter()
+        .filter(|name| is_cjk_font_name(name))
+        .cloned()
+        .collect();
+    (names, fonts, cjk)
 }
 
 fn default_title_font_scale() -> f32 {
     1.5
 }
 
-fn generate_pin() -> String {
-    use rand::RngCore;
-    let val = rand::rngs::OsRng.next_u32() % 10000;
-    format!("{:04}", val)
-}
-
 #[derive(PartialEq)]
 pub enum AppView {
     Library,
+    Notes,
     Reader,
-    Sync,
 }
 
 /// Custom text selection state (replaces egui's native selectable label).
@@ -379,7 +393,6 @@ impl TextSelection {
 }
 
 pub struct ReaderApp {
-    pub reading_service: Option<crate::ui::reading_services::ServicePanel>,
     pub pending_batch_import: Option<std::sync::mpsc::Receiver<Vec<String>>>,
     pub(crate) scripts_enabled: bool,
     pub(crate) native_events:
@@ -418,6 +431,8 @@ pub struct ReaderApp {
     pub reader_font_color: Option<Color32>,
     pub reader_font_family: String,
     pub reader_cjk_font_family: String,
+    pub reader_title_font_family: String,
+    pub title_font_search: String,
     pub reader_page_animation: String,
     pub reader_page_animation_speed: f32,
     pub reader_bg_image_path: Option<String>,
@@ -427,7 +442,6 @@ pub struct ReaderApp {
     pub(crate) reader_introduction_seen: bool,
     pub(crate) show_reader_introduction: bool,
     pub confirm_display_reset: bool,
-    pub show_csc_settings: bool,
     pub show_toc: bool,
     pub show_app_navigation: bool,
     pub scroll_to_top: bool,
@@ -446,9 +460,23 @@ pub struct ReaderApp {
     pub library_query: String,
     pub library_sort_title: bool,
     pub library_list_mode: bool,
-    pub sync_tab: usize,
     pub library: Library,
     pub scroll_mode: bool,
+    pub mouse_page_turn: bool,
+    pub shortcuts: std::collections::BTreeMap<String, String>,
+    pub shortcut_capture: Option<String>,
+    pub show_notes_search: bool,
+    pub notes_search_query: String,
+    pub notes_search_results: Vec<crate::ui::notes_search::NoteHit>,
+    pub notes_search_just_opened: bool,
+    pub notes_page: crate::ui::notes_page::NotesPage,
+    pub quick_open: crate::ui::quick_open::QuickOpen,
+    pub bookmark_toast: Option<(String, f64)>,
+    pub vim: crate::ui::vim::VimState,
+    /// Vim 叠加层状态指纹；变化时丢弃卷页缓存，确保标签/光标立即重绘。
+    pub vim_paint_key: u64,
+    pub note_popup: Option<crate::ui::note_popup::NotePopup>,
+    pub last_highlight_undo: Option<String>,
     pub(crate) continuous_scroll: ContinuousScrollState,
     pub current_page: usize,
     pub total_pages: usize,
@@ -483,6 +511,7 @@ pub struct ReaderApp {
     pending_cjk_font_family: Option<String>,
     pub system_font_names: Vec<String>,
     pub(crate) system_font_paths: HashMap<String, crate::system_fonts::SystemFont>,
+    pub(crate) cjk_font_names: std::collections::HashSet<String>,
     font_discovery_result: FontDiscoveryResult,
     last_saved_settings: Option<AppSettings>,
     pub font_search: String,
@@ -490,29 +519,8 @@ pub struct ReaderApp {
     pub i18n: I18n,
     language_checked: std::time::Instant,
     pub scroll_toc_to_current: bool,
-    // ── Sharing ──
-    pub auto_start_sharing: bool,
-    pub peer_store: Arc<Mutex<PeerStore>>,
-    pub show_sharing_panel: bool,
-    pub sharing_server_running: bool,
-    pub sharing_server_addr: String,
-    pub sharing_pin: String,
-    pub connect_addr_input: String,
-    pub connect_pin_input: String,
-    /// When Some, a pairing dialog is shown for this peer
-    pub pairing_dialog_peer: Option<DiscoveredPeer>,
-    pub pairing_dialog_pin: String,
-    pub sharing_status: Arc<Mutex<String>>,
-    pub server_stop_flag: Arc<AtomicBool>,
-    /// Held to keep the discovery listener thread alive.
-    #[allow(dead_code)]
-    pub discovery_stop_flag: Arc<AtomicBool>,
-    pub discovered_peers: Arc<Mutex<Vec<DiscoveredPeer>>>,
-    pub pending_sync_updates: Arc<Mutex<Vec<reader_core::sharing::CommittedProgress>>>,
-    pub pending_library_reload: Arc<AtomicBool>,
-    pub shared_book_paths: Arc<Mutex<Vec<String>>>,
+    // ── Feedback ──
     pub feedback_logs: Arc<Mutex<Vec<String>>>,
-    pub show_feedback_github_prompt: bool,
     pub last_exported_feedback_log: Option<String>,
     pub show_about: bool,
     pub show_language: bool,
@@ -545,27 +553,26 @@ pub struct ReaderApp {
     pub search_selected: Option<usize>,
     // ── Annotations ──
     pub show_annotations: bool,
+    // ── AI assistant ──
+    pub show_ai_panel: bool,
+    pub ai_messages: Vec<crate::ui::ai::AiMessage>,
+    pub ai_input: String,
+    pub ai_status: String,
+    pub ai_streaming: bool,
+    pub ai_rx: Option<std::sync::mpsc::Receiver<crate::ui::ai::AiEvent>>,
+    pub ai_stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    pub ai_scroll_to_end: bool,
     pub(crate) annotations_panel: crate::ui::annotations::PanelState,
     pub(crate) annotation_export: Option<crate::ui::annotations::AnnotationExportTask>,
-    pub(crate) backup: crate::ui::backup::BackupState,
     pub book_config: Option<reader_core::library::BookConfig>,
-    // ── Export ──
-    pub show_export_dialog: bool,
-    pub book_share: crate::ui::book_share::ShareUI,
-    pub share_paths: Vec<String>,
-    pub share_mode: reader_core::export::ExportMode,
-    pub rename_book: Option<(String, String)>,
-    #[allow(dead_code)]
-    pub export_book_id: Option<String>,
-    // ── Stats ──
-    pub show_stats: bool,
-    pub activity: crate::ui::stats::DesktopActivity,
     // ── Auto-scroll ──
     #[allow(dead_code)]
     pub auto_scroll: bool,
     pub auto_scroll_speed: f32,
-    // ── Library export ──
-    pub export_library_path: Option<String>,
+    // ── AI settings ──
+    pub ai_base_url: String,
+    pub ai_api_key: String,
+    pub ai_model: String,
     // ── Custom text selection ──
     pub text_selection: Option<TextSelection>,
     pub sel_toolbar_pos: egui::Pos2,
@@ -580,93 +587,7 @@ pub struct ReaderApp {
     pub editing_note_id: Option<String>,
     pub editing_note_buf: String,
     pub editing_note_original: Option<String>,
-    // ── TTS ──
-    pub tts_playing: bool,
-    pub tts_paused: bool,
-    pub tts_voice_name: String,
-    pub tts_rate: i32,   // e.g. 0, -20, +50 (percent)
-    pub tts_volume: i32, // e.g. 0, -50, +50 (percent)
-    pub tts_current_chapter: usize,
-    pub tts_current_block: usize,
-    pub tts_current_char: usize,
-    pub tts_stop_flag: std::sync::Arc<std::sync::atomic::AtomicBool>,
-    pub tts_generation: std::sync::Arc<std::sync::atomic::AtomicU64>,
-    pub tts_audio_sink: Option<std::sync::Arc<rodio::Sink>>,
-    pub tts_output_stream: Option<rodio::OutputStream>,
-    pub tts_output_handle: Option<rodio::OutputStreamHandle>,
-    pub tts_status: std::sync::Arc<std::sync::Mutex<String>>,
-    pub show_tts_panel: bool,
-    pub tts_pending_audio: Option<TtsAudioResultSlot>,
-    /// Prefetched audio for the next block (ready to play immediately when current finishes).
-    pub tts_prefetch_audio: Option<TtsAudioResultSlot>,
-    /// Chapter and block that the prefetch corresponds to.
-    pub tts_prefetch_chapter: usize,
-    pub tts_prefetch_block: usize,
-    /// Keep the reader viewport aligned with the current TTS block.
-    pub tts_follow_view: bool,
-    /// Prevent TTS-driven page/chapter navigation from detaching the viewport.
-    pub tts_syncing_navigation: bool,
     pub last_egui_ctx: Option<egui::Context>,
-    // ── API Settings ──
-    pub translate_api_url: String,
-    pub translate_api_model: String,
-    pub translate_api_provider: String,
-    pub translate_api_key: String,
-    pub dictionary_api_url: String,
-    pub dictionary_api_model: String,
-    pub dictionary_api_provider: String,
-    pub dictionary_api_key: String,
-
-    // ── CSC (Chinese Spelling Correction) ──
-    pub csc_mode: reader_core::csc::CorrectionMode,
-    pub csc_threshold: reader_core::csc::CscThreshold,
-    pub csc_model_status: reader_core::csc::ModelStatus,
-    pub csc_download_progress: std::sync::Arc<std::sync::Mutex<f32>>,
-    pub csc_engine: std::sync::Arc<std::sync::Mutex<Option<reader_core::csc::CscEngine>>>,
-    /// Cached correction results: (chapter, block_idx) → Vec<CorrectionInfo>
-    pub csc_cache:
-        std::collections::HashMap<(usize, usize), Vec<reader_core::epub::CorrectionInfo>>,
-    /// Channel to send work to the CSC background worker thread.
-    pub csc_work_tx: Option<std::sync::mpsc::Sender<CscWork>>,
-    /// Channel to receive results from the CSC background worker thread.
-    pub csc_result_rx: Option<std::sync::mpsc::Receiver<CscResult>>,
-    /// Active CSC correction popup (for accept / revert / ignore).
-    pub csc_popup: Option<CscPopupInfo>,
-    /// Buffer for custom CSC replacement text input.
-    pub csc_custom_replace_buf: String,
-    /// Whether the custom replace popup is shown (selection-based).
-    pub csc_custom_replace_active: bool,
-    // ── GitHub OAuth ──
-    pub github_sync_enabled: bool,
-    pub github_sync_contributions: bool,
-    pub cloud_sync: crate::ui::github_sync::CloudSyncState,
-    pub github_oauth_scope: String,
-    pub github_repo_authorized: bool,
-    pub github_enable_sync_after_login: bool,
-    pub github_token: Option<String>,
-    pub github_username: Option<String>,
-    pub github_device_code: Option<String>,
-    pub github_user_code: Option<String>,
-    pub github_oauth_polling: bool,
-    pub github_oauth_interval: u64,
-    pub github_oauth_expires_at: Option<std::time::Instant>,
-    pub show_github_login: bool,
-    pub github_oauth_status: String,
-    // GitHub OAuth Device Flow async channels
-    pub github_pending_device_code: Option<std::sync::mpsc::Receiver<DeviceCodeResult>>,
-    pub github_pending_token_poll:
-        Option<std::sync::mpsc::Receiver<Result<crate::ui::github_oauth::PollResult, String>>>,
-    pub github_last_poll: Option<std::time::Instant>,
-    // ── CSC Contribution ──
-    pub show_csc_contribute_dialog: bool,
-    pub csc_contribute_prompted: bool,
-    pub csc_contribute_dismissed: bool,
-    pub csc_contribute_in_progress: bool,
-    pub csc_contribution_samples: Option<Vec<reader_core::csc::contribution::Sample>>,
-    pub csc_contribute_status: String,
-    pub csc_contribute_pr_url: Option<String>,
-    pub csc_contribute_rx:
-        Option<std::sync::mpsc::Receiver<crate::ui::csc_contribute::ContributeResult>>,
     // ── Review Panel (段评覆盖层) ──
     pub show_review_panel: bool,
     pub review_panel_chapter: Option<usize>,
@@ -804,23 +725,15 @@ impl ReaderApp {
         let font_discovery_result: FontDiscoveryResult = Arc::new(Mutex::new(None));
         {
             let result_slot = font_discovery_result.clone();
-            let font_data_dir = data_dir.clone();
             std::thread::spawn(move || {
-                let (mut names, mut paths) = discover_system_fonts();
-                crate::ui::font_library::add_installed(&font_data_dir, &mut names, &mut paths);
-                let fonts = (names, paths);
+                let (names, paths, cjk) = discover_system_fonts();
+                let fonts = (names, paths, cjk);
                 if let Ok(mut slot) = result_slot.lock() {
                     *slot = Some(fonts);
                 }
             });
         }
-        let peer_store = PeerStore::load(&data_dir);
-        let pin = generate_pin();
-        let own_device_id = peer_store.device_id.clone();
-        let discovery_stop_flag = Arc::new(AtomicBool::new(false));
-        let discovered_peers = start_listener(&own_device_id, discovery_stop_flag.clone());
         let mut app = Self {
-            reading_service: None,
             pending_batch_import: None,
             data_dir,
             book: None,
@@ -857,6 +770,8 @@ impl ReaderApp {
             reader_font_color: None,
             reader_font_family: "Sans".to_string(),
             reader_cjk_font_family: default_sans(),
+            reader_title_font_family: String::new(),
+            title_font_search: String::new(),
             reader_page_animation: "Realistic".to_string(),
             reader_page_animation_speed: 0.14,
             reader_bg_image_path: None,
@@ -866,7 +781,6 @@ impl ReaderApp {
             reader_introduction_seen: false,
             show_reader_introduction: false,
             confirm_display_reset: false,
-            show_csc_settings: false,
             show_toc: true,
             show_app_navigation: true,
             scroll_to_top: false,
@@ -885,9 +799,22 @@ impl ReaderApp {
             library_query: String::new(),
             library_sort_title: false,
             library_list_mode: false,
-            sync_tab: 0,
             library,
             scroll_mode: false,
+            mouse_page_turn: false,
+            shortcuts: default_shortcuts(),
+            shortcut_capture: None,
+            show_notes_search: false,
+            notes_search_query: String::new(),
+            notes_search_results: Vec::new(),
+            notes_search_just_opened: false,
+            notes_page: Default::default(),
+            quick_open: Default::default(),
+            bookmark_toast: None,
+            vim: Default::default(),
+            vim_paint_key: 0,
+            note_popup: None,
+            last_highlight_undo: None,
             continuous_scroll: ContinuousScrollState::default(),
             current_page: 0,
             total_pages: 0,
@@ -919,6 +846,7 @@ impl ReaderApp {
             pending_cjk_font_family: None,
             system_font_names: Vec::new(),
             system_font_paths: HashMap::new(),
+            cjk_font_names: std::collections::HashSet::new(),
             font_discovery_result,
             last_saved_settings: None,
             font_search: String::new(),
@@ -926,26 +854,7 @@ impl ReaderApp {
             i18n: I18n::default(),
             language_checked: std::time::Instant::now(),
             scroll_toc_to_current: false,
-            // Sharing
-            auto_start_sharing: false,
-            peer_store: Arc::new(Mutex::new(peer_store)),
-            show_sharing_panel: false,
-            sharing_server_running: false,
-            sharing_server_addr: String::new(),
-            sharing_pin: pin,
-            connect_addr_input: String::new(),
-            connect_pin_input: String::new(),
-            pairing_dialog_peer: None,
-            pairing_dialog_pin: String::new(),
-            sharing_status: Arc::new(Mutex::new(String::new())),
-            server_stop_flag: Arc::new(AtomicBool::new(false)),
-            discovery_stop_flag,
-            discovered_peers,
-            pending_sync_updates: Arc::new(Mutex::new(Vec::new())),
-            pending_library_reload: Arc::new(AtomicBool::new(false)),
-            shared_book_paths: Arc::new(Mutex::new(Vec::new())),
             feedback_logs: Arc::new(Mutex::new(Vec::new())),
-            show_feedback_github_prompt: false,
             last_exported_feedback_log: None,
             show_about: false,
             show_language: false,
@@ -976,24 +885,23 @@ impl ReaderApp {
             search_selected: None,
             // Annotations
             show_annotations: false,
+            show_ai_panel: false,
+            ai_messages: Vec::new(),
+            ai_input: String::new(),
+            ai_status: String::new(),
+            ai_streaming: false,
+            ai_rx: None,
+            ai_stop: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            ai_scroll_to_end: false,
             annotations_panel: Default::default(),
             annotation_export: None,
-            backup: Default::default(),
             book_config: None,
-            // Export
-            show_export_dialog: false,
-            book_share: Default::default(),
-            share_paths: Vec::new(),
-            share_mode: reader_core::export::ExportMode::Original,
-            rename_book: None,
-            export_book_id: None,
-            // Stats
-            show_stats: false,
-            activity: Default::default(),
             // Auto-scroll
             auto_scroll: false,
             auto_scroll_speed: 30.0,
-            export_library_path: None,
+            ai_base_url: "https://api.openai.com/v1".into(),
+            ai_api_key: String::new(),
+            ai_model: "gpt-4o-mini".into(),
             text_selection: None,
             sel_toolbar_pos: egui::Pos2::ZERO,
             sel_press_origin: None,
@@ -1003,78 +911,7 @@ impl ReaderApp {
             editing_note_id: None,
             editing_note_buf: String::new(),
             editing_note_original: None,
-            // TTS
-            tts_playing: false,
-            tts_paused: false,
-            tts_voice_name: "zh-CN-XiaoxiaoNeural".to_string(),
-            tts_rate: 0,
-            tts_volume: 0,
-            tts_current_chapter: 0,
-            tts_current_block: 0,
-            tts_current_char: 0,
-            tts_stop_flag: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            tts_generation: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
-            tts_audio_sink: None,
-            tts_output_stream: None,
-            tts_output_handle: None,
-            tts_status: std::sync::Arc::new(std::sync::Mutex::new(String::new())),
-            show_tts_panel: false,
-            tts_pending_audio: None,
-            tts_prefetch_audio: None,
-            tts_prefetch_chapter: 0,
-            tts_prefetch_block: 0,
-            tts_follow_view: false,
-            tts_syncing_navigation: false,
             last_egui_ctx: None,
-            // API settings
-            translate_api_url: String::new(),
-            translate_api_model: "gpt-4o-mini".into(),
-            translate_api_provider: "openai".into(),
-            translate_api_key: String::new(),
-            dictionary_api_url: String::new(),
-            dictionary_api_model: "gpt-4o-mini".into(),
-            dictionary_api_provider: "openai".into(),
-            dictionary_api_key: String::new(),
-            // CSC
-            csc_mode: reader_core::csc::CorrectionMode::None,
-            csc_threshold: reader_core::csc::CscThreshold::Standard,
-            csc_model_status: reader_core::csc::ModelStatus::NotDownloaded,
-            csc_download_progress: std::sync::Arc::new(std::sync::Mutex::new(0.0)),
-            csc_engine: std::sync::Arc::new(std::sync::Mutex::new(None)),
-            csc_cache: std::collections::HashMap::new(),
-            csc_work_tx: None,
-            csc_result_rx: None,
-            csc_popup: None,
-            csc_custom_replace_buf: String::new(),
-            csc_custom_replace_active: false,
-            // GitHub OAuth
-            github_sync_enabled: false,
-            github_sync_contributions: false,
-            cloud_sync: Default::default(),
-            github_oauth_scope: "public_repo".into(),
-            github_repo_authorized: false,
-            github_enable_sync_after_login: false,
-            github_token: None,
-            github_username: None,
-            github_device_code: None,
-            github_user_code: None,
-            github_oauth_polling: false,
-            github_oauth_interval: 5,
-            github_oauth_expires_at: None,
-            show_github_login: false,
-            github_oauth_status: String::new(),
-            github_pending_device_code: None,
-            github_pending_token_poll: None,
-            github_last_poll: None,
-            // CSC Contribution
-            show_csc_contribute_dialog: false,
-            csc_contribute_prompted: false,
-            csc_contribute_dismissed: false,
-            csc_contribute_in_progress: false,
-            csc_contribution_samples: None,
-            csc_contribute_status: String::new(),
-            csc_contribute_pr_url: None,
-            csc_contribute_rx: None,
             // Review Panel
             show_review_panel: false,
             review_panel_chapter: None,
@@ -1093,14 +930,6 @@ impl ReaderApp {
             settings.apply_to_app(&mut app);
             app.embedded_fonts_registered = false;
             app.pages_dirty = true;
-            // Restore github token
-            if app.github_username.is_some() {
-                let has_token = app.github_token.is_some();
-                app.push_feedback_log(format!(
-                    "[Init] github_username={:?}, token_restored={}",
-                    app.github_username, has_token
-                ));
-            }
             // 自动恢复上次阅读的书籍
             if let Some(ref path) = settings.last_book_path.clone() {
                 if std::path::Path::new(path).exists() {
@@ -1112,20 +941,6 @@ impl ReaderApp {
             }
         } else {
             app.push_feedback_log("[Init] no saved settings found, using defaults");
-        }
-        // 检查CSC模型状态
-        app.csc_check_model_status();
-        // Auto-load CSC model if downloaded and correction mode enabled
-        #[cfg(feature = "csc")]
-        if app.csc_model_status == reader_core::csc::ModelStatus::Downloaded
-            && app.csc_mode != reader_core::csc::CorrectionMode::None
-        {
-            app.push_feedback_log("[Init] auto-loading CSC model");
-            app.csc_load_model();
-        }
-        if app.auto_start_sharing {
-            app.push_feedback_log("[Init] auto-starting sharing server");
-            app.start_sharing_server();
         }
         app.push_feedback_log(format!(
             "[Init] app initialized (data_dir={})",
@@ -1158,7 +973,6 @@ impl ReaderApp {
             self.request_curl_turn(direction >= 0., Some(target_page));
             return;
         }
-        let page_changed = target_page != self.current_page;
         if self.reader_page_animation == "None"
             || self.scroll_mode
             || target_page == self.current_page
@@ -1167,9 +981,6 @@ impl ReaderApp {
             self.page_anim_progress = 1.0;
             self.page_anim_from = target_page;
             self.page_anim_to = target_page;
-            if page_changed {
-                self.tts_detach_view();
-            }
             return;
         }
 
@@ -1183,7 +994,6 @@ impl ReaderApp {
         self.page_anim_progress = 0.0;
         self.page_anim_cross_chapter = false;
         self.current_page = target_page;
-        self.tts_detach_view();
     }
 
     pub fn ensure_reader_bg_texture(&mut self, ctx: &egui::Context) {
@@ -1248,20 +1058,9 @@ impl ReaderApp {
             self.pending_restore_block = None;
             self.position_save_modified_ms = reader_core::now_millis();
             self.position_save_due = Some(std::time::Instant::now());
-            if let Err(error) = self.flush_reading_position_for_backup() {
+            if let Err(error) = self.flush_reading_position() {
                 self.error_msg = Some(error);
             }
-            // Trigger CSC for this chapter + prefetch prev & next
-            self.csc_trigger_chapter(self.current_chapter);
-            if self.current_chapter > 0 {
-                self.csc_trigger_chapter(self.current_chapter - 1);
-            }
-            if self.current_chapter + 1 < total {
-                self.csc_trigger_chapter(self.current_chapter + 1);
-            }
-            // Check if user should be prompted to contribute
-            self.csc_check_contribution_prompt();
-            self.tts_detach_view();
         }
     }
 
@@ -1276,150 +1075,8 @@ impl ReaderApp {
             self.pending_restore_block = None;
             self.position_save_modified_ms = reader_core::now_millis();
             self.position_save_due = Some(std::time::Instant::now());
-            if let Err(error) = self.flush_reading_position_for_backup() {
+            if let Err(error) = self.flush_reading_position() {
                 self.error_msg = Some(error);
-            }
-            // Trigger CSC for this chapter + prefetch prev & next
-            let total = self.total_chapters();
-            self.csc_trigger_chapter(self.current_chapter);
-            if self.current_chapter > 0 {
-                self.csc_trigger_chapter(self.current_chapter - 1);
-            }
-            if self.current_chapter + 1 < total {
-                self.csc_trigger_chapter(self.current_chapter + 1);
-            }
-            // Check if user should be prompted to contribute
-            self.csc_check_contribution_prompt();
-            self.tts_detach_view();
-        }
-    }
-
-    // ── CSC background processing ──
-
-    /// Spawn a background worker thread for CSC inference.
-    /// The worker owns the engine lock and processes chapters sent via channel.
-    pub fn csc_spawn_worker(&mut self) {
-        let (work_tx, work_rx) = std::sync::mpsc::channel::<CscWork>();
-        let (result_tx, result_rx) = std::sync::mpsc::channel::<CscResult>();
-        let engine = self.csc_engine.clone();
-        let logs = self.feedback_logs.clone();
-
-        std::thread::spawn(move || {
-            while let Ok(work) = work_rx.recv() {
-                let start = std::time::Instant::now();
-                let mut corrections = Vec::new();
-                if let Ok(mut guard) = engine.lock() {
-                    if let Some(ref mut eng) = *guard {
-                        eng.mode = work.mode;
-                        eng.threshold = work.threshold;
-                        for (block_idx, text) in &work.blocks {
-                            let corrs = eng.check(text);
-                            if !corrs.is_empty() {
-                                corrections.push((*block_idx, corrs));
-                            }
-                        }
-                    }
-                }
-                let elapsed = start.elapsed().as_secs_f32();
-                let total: usize = corrections.iter().map(|(_, c)| c.len()).sum();
-                dbg_log(
-                    &logs,
-                    format!(
-                        "[CSC] chapter {} done: {:.1}s, {} corrections in {} blocks",
-                        work.chapter,
-                        elapsed,
-                        total,
-                        corrections.len(),
-                    ),
-                );
-                let _ = result_tx.send(CscResult {
-                    chapter: work.chapter,
-                    corrections,
-                });
-            }
-        });
-
-        self.csc_work_tx = Some(work_tx);
-        self.csc_result_rx = Some(result_rx);
-    }
-
-    /// Queue a chapter for background CSC processing.
-    /// Skips if mode is None, engine not ready, or chapter already cached.
-    pub fn csc_trigger_chapter(&mut self, chapter_idx: usize) {
-        use reader_core::csc::CorrectionMode;
-        use reader_core::epub::ContentBlock;
-
-        if self.csc_mode == CorrectionMode::None {
-            return;
-        }
-        // Check engine is loaded
-        {
-            let guard = self.csc_engine.lock().unwrap();
-            if guard.is_none() || !guard.as_ref().unwrap().is_ready() {
-                return;
-            }
-        }
-        // Skip if already cached
-        if self.csc_cache.keys().any(|(ch, _)| *ch == chapter_idx) {
-            return;
-        }
-
-        // Extract block texts
-        let block_texts: Vec<(usize, String)> = if let Some(book) = &self.book {
-            if let Ok(chapter) = book.chapter(chapter_idx) {
-                chapter
-                    .blocks
-                    .iter()
-                    .enumerate()
-                    .filter_map(|(i, block)| {
-                        let spans = match block {
-                            ContentBlock::Paragraph { spans, .. } => spans,
-                            ContentBlock::Heading { spans, .. } => spans,
-                            _ => return None,
-                        };
-                        let text: String = spans.iter().map(|s| s.text.as_str()).collect();
-                        if text.trim().is_empty() {
-                            None
-                        } else {
-                            Some((i, text))
-                        }
-                    })
-                    .collect()
-            } else {
-                return;
-            }
-        } else {
-            return;
-        };
-
-        if block_texts.is_empty() {
-            return;
-        }
-
-        self.push_feedback_log(format!(
-            "[CSC] trigger ch {} ({} text blocks)",
-            chapter_idx,
-            block_texts.len(),
-        ));
-
-        if let Some(tx) = &self.csc_work_tx {
-            let _ = tx.send(CscWork {
-                chapter: chapter_idx,
-                blocks: block_texts,
-                mode: self.csc_mode.clone(),
-                threshold: self.csc_threshold.clone(),
-            });
-        }
-    }
-
-    /// Poll CSC worker results and merge into cache.
-    pub fn csc_poll_results(&mut self) {
-        if let Some(rx) = &self.csc_result_rx {
-            while let Ok(result) = rx.try_recv() {
-                for (block_idx, corrections) in result.corrections {
-                    self.csc_cache
-                        .insert((result.chapter, block_idx), corrections);
-                }
             }
         }
     }
@@ -1498,7 +1155,7 @@ impl ReaderApp {
         }
     }
 
-    pub(crate) fn flush_reading_position_for_backup(&mut self) -> Result<(), String> {
+    pub(crate) fn flush_reading_position(&mut self) -> Result<(), String> {
         if let Some(due) = self.position_save_due.take() {
             if let Err(error) = self.persist_reading_position() {
                 self.position_save_due = Some(due);
@@ -1520,44 +1177,29 @@ impl ReaderApp {
         }
     }
     fn persist_reading_position(&mut self) -> Result<(), String> {
-        self.record_outgoing_progress();
         let Some(path) = self.book_path.clone() else {
             return Ok(());
         };
-        if let Some(record) = self
-            .current_book_hash
-            .clone()
-            .and_then(|hash| self.cloud_stored_progress(&hash))
-        {
-            // A delayed viewport flush must publish the same selected revision, not invent another.
-            if (
-                record.progress.chapter,
-                record.progress.block,
-                record.progress.char_offset,
-            ) == (
-                self.current_chapter,
-                self.current_block,
-                self.current_char_offset,
-            ) {
-                self.library
-                    .apply_versioned_position(&self.data_dir, &path, &record)?;
-            }
-        } else if self.current_book_hash.is_none() {
-            let title = self
-                .book
-                .as_ref()
-                .and_then(|b| b.chapters.get(self.current_chapter))
-                .map(|c| c.title.clone());
-            self.library.apply_position_at(
-                &self.data_dir,
-                &path,
-                self.current_chapter,
-                title,
-                self.current_block,
-                self.current_char_offset,
-                self.position_save_modified_ms,
-            )?;
+        if self.position_save_modified_ms == 0 {
+            self.position_save_modified_ms = reader_core::now_millis();
         }
+        let title = self
+            .book
+            .as_ref()
+            .and_then(|b| b.chapters.get(self.current_chapter))
+            .map(|c| c.title.clone());
+        self.library.apply_position_at(
+            &self.data_dir,
+            &path,
+            self.current_chapter,
+            title,
+            self.current_block,
+            self.current_char_offset,
+            self.position_save_modified_ms,
+        )?;
+        self.last_synced_chapter = Some(self.current_chapter);
+        self.last_synced_block = Some(self.current_block);
+        self.last_synced_char_offset = Some(self.current_char_offset);
         Ok(())
     }
 
@@ -1582,7 +1224,7 @@ impl ReaderApp {
             .unwrap_or_default()
             .as_secs();
         let line = format!("[{ts}] {}", msg.as_ref());
-        if reader_core::sharing::is_debug_logging_enabled() {
+        if reader_core::diagnostics::is_debug_logging_enabled() {
             eprintln!("[FEEDBACK-LOG] {line}");
         }
 
@@ -1610,12 +1252,6 @@ impl ReaderApp {
         let _ = writeln!(output, "app_version={}", env!("CARGO_PKG_VERSION"));
         let _ = writeln!(output, "data_dir={}", self.data_dir);
         let _ = writeln!(output, "books_count={}", self.library.books.len());
-        let _ = writeln!(
-            output,
-            "sharing_server_running={}",
-            self.sharing_server_running
-        );
-        let _ = writeln!(output, "sharing_server_addr={}", self.sharing_server_addr);
         let _ = writeln!(output, "language={}", self.i18n.language().code());
         let _ = writeln!(output, "---");
         let _ = writeln!(output, "Recent Books:");
@@ -1780,22 +1416,14 @@ impl Drop for ReaderApp {
         if let Some(cancel) = self.pending_open_cancel.take() {
             cancel.cancel();
         }
-        if !self.backup.busy()
-            && !self
-                .reader_navigation
-                .pending_remote_from(self.reader_location())
-            && self.book_path.is_some()
-            && self.position_save_due.is_some()
+        if self.book_path.is_some() && self.position_save_due.is_some()
         {
-            if let Err(error) = self.flush_reading_position_for_backup() {
+            if let Err(error) = self.flush_reading_position() {
                 eprintln!("Cannot flush reading position: {error}");
             }
         }
         if let Err(error) = AppSettings::from_app(self).save(&self.data_dir) {
             eprintln!("{error}");
-        }
-        if !self.backup.busy() {
-            self.flush_reading_stats();
         }
     }
 }
@@ -1831,13 +1459,11 @@ impl eframe::App for ReaderApp {
         }
         self.sync_appearance(ctx);
         self.last_egui_ctx = Some(ctx.clone());
-        self.tick_book_share(ctx);
         self.advance_book_presentation();
         self.poll_book_open();
         self.poll_reader_navigation();
         #[cfg(debug_assertions)]
         self.check_reader_navigation(ctx);
-        // --- Poll TTS audio ---
         if self.i18n.preference() == &Language::Auto {
             ctx.request_repaint_after(std::time::Duration::from_secs(1));
             if self.language_checked.elapsed() >= std::time::Duration::from_secs(1) {
@@ -1847,27 +1473,15 @@ impl eframe::App for ReaderApp {
                 }
             }
         }
-        self.tts_poll_audio();
-        self.poll_reading_activity(ctx);
         self.flush_reading_position_if_due();
-        // --- Poll CSC model download ---
-        self.csc_poll_download();
-        // --- Poll GitHub OAuth ---
-        self.github_poll_device_code();
-        self.github_poll_token();
-        self.github_poll_token_result();
-        self.record_outgoing_progress();
-        self.cloud_poll(ctx);
         self.poll_annotation_export(ctx);
-        self.poll_backup(ctx);
-        // --- Poll CSC Contribution ---
-        self.csc_poll_contribution();
         // --- Check async font discovery result ---
         if self.system_font_names.is_empty() {
             if let Ok(mut slot) = self.font_discovery_result.lock() {
-                if let Some((names, paths)) = slot.take() {
+                if let Some((names, paths, cjk)) = slot.take() {
                     self.system_font_names = names;
                     self.system_font_paths = paths;
+                    self.cjk_font_names = cjk;
                     // Restore the user's preferred fonts now that system fonts
                     // are available, and trigger re-registration so the fonts
                     // actually get loaded into egui.
@@ -1888,8 +1502,6 @@ impl eframe::App for ReaderApp {
             }
         }
 
-        // --- Poll CSC background results ---
-        self.csc_poll_results();
 
         // --- Poll startup update check result ---
         if matches!(self.update_state, UpdateState::Checking) {
@@ -1947,35 +1559,11 @@ impl eframe::App for ReaderApp {
             self.render_update_dialog(ctx);
         }
 
-        self.poll_received_progress();
-
-        // --- Reload library from disk if sync completed ---
-        if !self.backup.busy() && self.pending_library_reload.swap(false, Ordering::SeqCst) {
-            self.reload_library();
-        }
-
-        // --- Keep shared_book_paths in sync with library ---
-        {
-            let paths: Vec<String> = self.library.books.iter().map(|b| b.path.clone()).collect();
-            *self
-                .shared_book_paths
-                .lock()
-                .unwrap_or_else(|e| e.into_inner()) = paths;
-        }
-
         self.defer_custom_font_for_frame = false;
 
         self.appearance_transition
             .begin(ctx, (self.dark_mode, self.appearance_current_dark));
         crate::ui::design::apply(ctx, self.dark_mode);
-        if self.show_github_login {
-            self.show_github_login = false;
-            self.open_sync(0);
-        }
-        if self.show_sharing_panel {
-            self.show_sharing_panel = false;
-            self.open_sync(1);
-        }
         if self.view != AppView::Reader
             || self.scroll_mode
             || self.reader_page_animation != "Realistic"
@@ -2115,6 +1703,31 @@ impl eframe::App for ReaderApp {
                 }
             }
 
+            // Register custom title system font (falls back to the body chain).
+            if !self.reader_title_font_family.trim().is_empty()
+                && !matches!(
+                    self.reader_title_font_family.as_str(),
+                    "Sans" | "Serif" | "Monospace"
+                )
+                && !fonts.font_data.contains_key(&self.reader_title_font_family)
+            {
+                if let Some(path) = self.system_font_paths.get(&self.reader_title_font_family) {
+                    if let Some(data) = path.load() {
+                        fonts
+                            .font_data
+                            .insert(self.reader_title_font_family.clone(), data);
+                        let mut fallback = vec![self.reader_title_font_family.clone()];
+                        if fonts.font_data.contains_key("cjk_font") {
+                            fallback.push("cjk_font".to_owned());
+                        }
+                        fonts.families.insert(
+                            egui::FontFamily::Name(self.reader_title_font_family.clone().into()),
+                            fallback,
+                        );
+                    }
+                }
+            }
+
             // Register custom CJK system font
             if !matches!(self.reader_cjk_font_family.as_str(), "Sans")
                 && !fonts.font_data.contains_key(&self.reader_cjk_font_family)
@@ -2241,8 +1854,25 @@ impl eframe::App for ReaderApp {
 
             fonts.families.insert(
                 egui::FontFamily::Name("ReaderFont".into()),
-                reader_font_chain,
+                reader_font_chain.clone(),
             );
+            let mut reader_title_chain = Vec::new();
+            let title_font = self.reader_title_font_family.trim();
+            if !title_font.is_empty() {
+                let available = fonts
+                    .families
+                    .contains_key(&egui::FontFamily::Name(title_font.to_string().into()));
+                if available || matches!(title_font, "Sans" | "Serif" | "Monospace") {
+                    reader_title_chain.push(title_font.to_string());
+                }
+            }
+            extend_unique_font_chain(&mut reader_title_chain, reader_font_chain.clone());
+            fonts.families.insert(
+                egui::FontFamily::Name("ReaderTitleFont".into()),
+                reader_title_chain,
+            );
+            crate::ui::reader_block::set_title_font_ready(true);
+
             fonts
                 .families
                 .insert(egui::FontFamily::Name("ReaderCjk".into()), reader_cjk_chain);
@@ -2274,9 +1904,6 @@ impl eframe::App for ReaderApp {
         if self.view == AppView::Reader {
             self.ensure_reader_bg_texture(ctx);
 
-            // TTS bar (between toolbar and content, Edge-style)
-            self.render_tts_bar(ctx);
-
             let collapse_label = self.i18n.t("common.collapse").to_owned();
             if crate::ui::design::animated_side_panel(
                 ctx,
@@ -2300,7 +1927,12 @@ impl eframe::App for ReaderApp {
         // ── Side-panels (rendered before CentralPanel) ──
         self.render_search_panel(ctx);
         self.render_annotations_panel(ctx);
+        self.render_ai_panel(ctx);
         self.render_settings_panel(ctx);
+        self.render_notes_search(ctx);
+        self.render_note_popup(ctx);
+        self.render_quick_open(ctx);
+        self.render_bookmark_toast(ctx);
 
         // ── Review Panel ──
         self.render_review_panel(ctx);
@@ -2318,37 +1950,27 @@ impl eframe::App for ReaderApp {
             })
             .show(ctx, |ui| match self.view {
                 AppView::Library => self.render_library(ui),
+                AppView::Notes => self.render_notes_page(ui),
                 AppView::Reader => self.render_reader(ui),
-                AppView::Sync => self.render_sync_page(ui),
             });
 
         // Chrome floats over the paper; it never reserves space in pagination.
         self.render_reader_chrome(ctx);
-        self.render_reader_correction_panel(ctx);
 
         if !panels_moving {
             self.panel_reflow_anchor = None;
         }
 
         // ── Floating windows ──
-        self.render_export_dialog(ctx);
-        self.render_reading_service(ctx);
-        self.render_receive_books(ctx);
-        self.render_rename_dialog(ctx);
-        self.render_stats_window(ctx);
         self.render_appearance_window(ctx);
-
-        self.render_sharing_dialogs(ctx);
 
         // ── About Window ──
         if self.show_about {
             self.render_about(ctx);
         }
 
-        // ── CSC Contribute Dialog ──
         self.render_display_reset_confirmation(ctx);
         self.render_language_picker(ctx);
-        self.render_csc_contribute_dialog(ctx);
 
         // ── TXT Import ──
         if self.txt_import.is_some() {
@@ -2357,7 +1979,6 @@ impl eframe::App for ReaderApp {
 
         self.render_book_opening(ctx);
         self.render_reader_introduction(ctx);
-        self.render_backup(ctx);
         #[cfg(debug_assertions)]
         self.capture_appearance_preview(ctx);
         #[cfg(feature = "performance-checks")]
@@ -2404,7 +2025,6 @@ mod first_reader_preferences_tests {
     use super::*;
     #[test]
     fn closing_a_pending_open_stops_its_worker_and_rejects_its_late_result() {
-        keyring::set_default_credential_builder(keyring::mock::default_credential_builder());
         let dir = tempfile::tempdir().unwrap();
         let mut app = ReaderApp::from_data_dir(dir.path().to_string_lossy().into());
         let token = reader_core::open_operation::Cancellation::default();
@@ -2441,7 +2061,6 @@ mod first_reader_preferences_tests {
     }
     #[test]
     fn corrupt_catalog_is_reported_and_a_failed_reload_keeps_the_visible_shelf() {
-        keyring::set_default_credential_builder(keyring::mock::default_credential_builder());
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().to_string_lossy().into_owned();
         std::fs::write(dir.path().join("library.json"), b"damaged").unwrap();
@@ -2471,7 +2090,6 @@ mod first_reader_preferences_tests {
 
     #[test]
     fn single_column_preference_persists_and_legacy_settings_default_to_auto() {
-        keyring::set_default_credential_builder(keyring::mock::default_credential_builder());
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().to_string_lossy().into_owned();
         let mut app = ReaderApp::from_data_dir(path.clone());
@@ -2494,7 +2112,6 @@ mod first_reader_preferences_tests {
     }
     #[test]
     fn first_run_defaults_and_previous_reader_migration() {
-        keyring::set_default_credential_builder(keyring::mock::default_credential_builder());
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().to_string_lossy().into_owned();
         let fresh = ReaderApp::from_data_dir(path.clone());
@@ -2538,7 +2155,6 @@ mod reading_theme_settings_tests {
 
     #[test]
     fn themes_persist_active_edits_without_touching_other_slots_or_reading_position() {
-        keyring::set_default_credential_builder(keyring::mock::default_credential_builder());
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().to_string_lossy().into_owned();
         let mut app = ReaderApp::from_data_dir(path.clone());
@@ -2579,7 +2195,6 @@ mod reading_theme_settings_tests {
 
     #[test]
     fn missing_or_malformed_new_field_preserves_legacy_pair_and_unrelated_settings() {
-        keyring::set_default_credential_builder(keyring::mock::default_credential_builder());
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().to_string_lossy().into_owned();
         let app = ReaderApp::from_data_dir(path.clone());
@@ -2624,12 +2239,7 @@ mod reading_navigation_tests {
     use super::*;
     use crate::ui::reader_navigation::{NavigationKind, ReaderLocation};
 
-    fn queued_fixture() -> (
-        tempfile::TempDir,
-        ReaderApp,
-        reader_core::sharing::CommittedProgress,
-    ) {
-        keyring::set_default_credential_builder(keyring::mock::default_credential_builder());
+    fn navigation_fixture() -> (tempfile::TempDir, ReaderApp) {
         let dir = tempfile::tempdir().unwrap();
         let mut app = ReaderApp::from_data_dir(dir.path().to_string_lossy().into_owned());
         let source = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -2639,39 +2249,18 @@ mod reading_navigation_tests {
             Some(19),
             Ok((EpubBook::open(&source).unwrap(), None)),
         );
-        let notice = reader_core::sharing::CommittedProgress {
-            path: app.book_path.clone().unwrap(),
-            record: reader_core::cloud_progress::VersionedProgress {
-                progress: reader_core::sharing::ProgressEntry {
-                    book_hash: app.current_book_hash.clone().unwrap(),
-                    title: "Book".into(),
-                    chapter: 21,
-                    block: 3,
-                    char_offset: 3,
-                    chapter_title: None,
-                    timestamp: 1700000000,
-                },
-                version: reader_core::cloud_progress::ProgressVersion {
-                    modified_ms: 1700000000123,
-                    device: "remote".into(),
-                    legacy: false,
-                },
-            },
-        };
-        app.library
-            .apply_versioned_position(&app.data_dir, &notice.path, &notice.record)
-            .unwrap();
-        (dir, app, notice)
+        (dir, app)
     }
     #[test]
     fn reopening_normalizes_an_out_of_range_legacy_chapter_without_resetting_valid_locations() {
-        let (_dir, mut app, notice) = queued_fixture();
+        let (_dir, mut app) = navigation_fixture();
+        let path = app.book_path.clone().unwrap();
         app.library
-            .update_position(&app.data_dir, &notice.path, 9999, None, 99, 99)
+            .update_position(&app.data_dir, &path, 9999, None, 99, 99)
             .unwrap();
-        let book = EpubBook::open(&notice.path).unwrap();
+        let book = EpubBook::open(&path).unwrap();
         let last = book.chapters.len() - 1;
-        app.finish_book_open(&notice.path, Some(0), Ok((book, None)));
+        app.finish_book_open(&path, Some(0), Ok((book, None)));
         assert!(app.error_msg.is_none(), "{:?}", app.error_msg);
         assert_eq!(
             app.reader_location(),
@@ -2687,13 +2276,9 @@ mod reading_navigation_tests {
             (last, 0)
         );
         app.library
-            .update_position(&app.data_dir, &notice.path, 19, None, 3, 37)
+            .update_position(&app.data_dir, &path, 19, None, 3, 37)
             .unwrap();
-        app.finish_book_open(
-            &notice.path,
-            Some(0),
-            Ok((EpubBook::open(&notice.path).unwrap(), None)),
-        );
+        app.finish_book_open(&path, Some(0), Ok((EpubBook::open(&path).unwrap(), None)));
         assert_eq!(
             app.reader_location(),
             ReaderLocation {
@@ -2705,46 +2290,7 @@ mod reading_navigation_tests {
     }
 
     #[test]
-    fn an_old_committed_notice_cannot_rewind_a_new_local_viewport_edit() {
-        let (_dir, mut app, notice) = queued_fixture();
-        app.schedule_position_save_at(19, 3, 37);
-        app.record_outgoing_progress();
-        app.pending_sync_updates.lock().unwrap().push(notice);
-        app.poll_received_progress();
-        assert_eq!(
-            app.reader_location(),
-            ReaderLocation {
-                chapter: 19,
-                block: 3,
-                char_offset: 37
-            }
-        );
-        assert!(app.reader_navigation.history.is_empty());
-        app.flush_reading_position_for_backup().unwrap();
-        assert_eq!(app.library.books[0].last_char_offset, 37);
-    }
-    #[test]
-    fn closing_an_unchanged_viewport_does_not_overwrite_an_inflight_committed_remote_edit() {
-        let (dir, app, notice) = queued_fixture();
-        let root = dir.path().to_str().unwrap();
-        assert!(app.position_save_due.is_none());
-        drop(app);
-        let library = reader_core::library::Library::load_from(root).unwrap();
-        assert_eq!(
-            (
-                library.books[0].last_chapter,
-                library.books[0].last_char_offset
-            ),
-            (21, 3)
-        );
-        let config =
-            reader_core::library::Library::read_book_config(root, &library.books[0].id).unwrap();
-        assert_eq!(config.reading_version(), Some(notice.record.version));
-    }
-
-    #[test]
-    fn remote_jump_return_and_restart_preserve_exact_coordinates_without_echo() {
-        keyring::set_default_credential_builder(keyring::mock::default_credential_builder());
+    fn jump_return_and_restart_preserve_exact_coordinates() {
         let directory = tempfile::tempdir().unwrap();
         let data = directory.path().to_string_lossy().into_owned();
         let source = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -2767,9 +2313,7 @@ mod reading_navigation_tests {
             block: 3,
             char_offset: 3,
         };
-        app.navigate_reader(target, NavigationKind::Remote);
-        // Loading must not mutate the visible position or create a local revision.
-        assert_eq!(app.reader_location(), origin);
+        app.navigate_reader(target, NavigationKind::Local);
         for _ in 0..500 {
             app.poll_reader_navigation();
             if app.reader_location() == target {
@@ -2778,7 +2322,6 @@ mod reading_navigation_tests {
             std::thread::sleep(std::time::Duration::from_millis(2));
         }
         assert_eq!(app.reader_location(), target);
-        assert_eq!(app.last_synced_char_offset, Some(3));
         assert_eq!(app.reader_navigation.history.len(), 1);
         assert_eq!(app.reader_navigation.history[0].location, origin);
         assert!(app.reader_navigation.history[0].page.contains('3'));
@@ -2793,17 +2336,6 @@ mod reading_navigation_tests {
             std::thread::sleep(std::time::Duration::from_millis(2));
         }
         assert_eq!(app.reader_location(), origin);
-        assert!(app.reader_navigation.history.is_empty());
-        app.navigate_reader(target, NavigationKind::Remote);
-        app.schedule_position_save_at(19, 3, 45);
-        app.poll_reader_navigation();
-        assert_eq!(
-            app.current_char_offset, 45,
-            "A pending remote load replaced newer local reading"
-        );
-        assert!(!app
-            .reader_navigation
-            .pending_remote_from(app.reader_location()));
         assert!(app.reader_navigation.history.is_empty());
         app.schedule_position_save_at(19, 3, 37);
         drop(app);
@@ -2822,7 +2354,6 @@ mod reading_navigation_tests {
     }
     #[test]
     fn batch_import_keeps_valid_books_and_reports_bad_inputs_without_opening_them() {
-        keyring::set_default_credential_builder(keyring::mock::default_credential_builder());
         let dir = tempfile::tempdir().unwrap();
         let input = tempfile::tempdir().unwrap();
         let mut paths = Vec::new();

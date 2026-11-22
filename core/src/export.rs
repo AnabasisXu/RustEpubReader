@@ -75,7 +75,6 @@ pub fn export_originals(
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub enum ExportMode {
     Original,
-    WithCorrections,
     WithAnnotations,
     Full,
 }
@@ -125,7 +124,7 @@ impl ExportMode {
     pub fn parse(value: &str) -> Result<Self, String> {
         match value {
             "original" => Ok(Self::Original),
-            "corrections" => Ok(Self::WithCorrections),
+            "corrections" => Ok(Self::Full),
             "annotations" => Ok(Self::WithAnnotations),
             "full" => Ok(Self::Full),
             _ => Err("Invalid export mode".into()),

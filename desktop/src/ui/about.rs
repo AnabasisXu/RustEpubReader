@@ -4,7 +4,7 @@ use crate::self_update;
 use eframe::egui;
 use std::sync::{Arc, Mutex};
 
-const GITHUB_URL: &str = "https://github.com/zhongbai2333/RustEpubReader";
+const GITHUB_URL: &str = "https://github.com/AnabasisXu/";
 const ICON_BYTES: &[u8] = include_bytes!("../../../icon/ReaderIcon2.png");
 
 impl ReaderApp {
@@ -363,7 +363,6 @@ mod update_tests {
 
     #[test]
     fn up_to_date_and_check_failure_keep_a_visible_retry_control() {
-        keyring::set_default_credential_builder(keyring::mock::default_credential_builder());
         let directory = tempfile::tempdir().unwrap();
         let mut app = ReaderApp::from_data_dir(directory.path().to_string_lossy().into_owned());
         fn collect(shape: &egui::Shape, text: &mut Vec<String>) {

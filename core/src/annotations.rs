@@ -341,7 +341,7 @@ pub fn concurrent_note_ids(config: &BookConfig) -> Vec<&str> {
 /// Read-only native presentation payload, distinct from the persisted BookConfig.
 pub fn view(config: &BookConfig) -> Value {
     serde_json::json!({"highlights":config.highlights,"notes":config.notes,
-        "bookmarks":config.bookmarks,"corrections":config.corrections,
+        "bookmarks":config.bookmarks,
         "concurrent_notes":concurrent_note_ids(config)})
 }
 

@@ -98,8 +98,6 @@ pub fn lock(root: &str) -> Result<Guard, String> {
         .map_err(|_| "Cannot open library access lock")?;
     File::lock(&file).map_err(|_| "Cannot acquire library access lock")?;
     gate.state.lock().unwrap_or_else(|e| e.into_inner()).file = Some(file);
-    crate::backup::transaction::recover(&directory)?;
-    crate::backup::transaction::reclaim_staging(&directory);
     Ok(guard)
 }
 #[cfg(test)]

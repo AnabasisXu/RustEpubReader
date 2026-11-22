@@ -6,6 +6,6 @@ mod native_typography;
 pub mod parser;
 
 pub use chapter::{
-    Chapter, ContentBlock, CorrectionInfo, CorrectionStatus, InlineStyle, TextSpan, TocEntry,
+    Chapter, ContentBlock, InlineStyle, TextSpan, TocEntry,
 };
 pub use parser::{EpubBook, EpubMetadata};

@@ -17,8 +17,6 @@ impl ReaderApp {
             && !self.show_search
             && !self.show_annotations
             && !self.show_review_panel
-            && !self.show_stats
-            && !self.show_export_dialog
             && !self.show_language
             && !self.show_about
             && !self.show_appearance_linkage

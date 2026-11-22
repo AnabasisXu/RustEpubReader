@@ -192,7 +192,6 @@ mod tests {
 
     #[test]
     fn category_save_after_external_archive_keeps_shelf_indices_valid() {
-        keyring::set_default_credential_builder(keyring::mock::default_credential_builder());
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().to_str().unwrap();
         let mut library = reader_core::library::Library::default();

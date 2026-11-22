@@ -85,7 +85,6 @@ fn paragraph(text: &str) -> ContentBlock {
             text: text.into(),
             style: reader_core::epub::InlineStyle::Normal,
             link_url: None,
-            correction: None,
         }],
         anchor_id: Some("p".into()),
         native_style: Default::default(),

@@ -126,6 +126,18 @@ impl ReaderApp {
     }
 
     pub fn render_reader(&mut self, ui: &mut egui::Ui) {
+        // 卷页/静态页缓存里是旧画面；vim 叠加层一变化就丢弃缓存重绘。
+        let mut vim_hash = std::collections::hash_map::DefaultHasher::new();
+        (self.vim.mode != crate::ui::vim::VimMode::Off).hash(&mut vim_hash);
+        (self.vim.mode == crate::ui::vim::VimMode::Visual).hash(&mut vim_hash);
+        self.vim.labels.hash(&mut vim_hash);
+        self.vim.cursor.hash(&mut vim_hash);
+        self.vim.start.hash(&mut vim_hash);
+        let vim_paint_key = vim_hash.finish();
+        if vim_paint_key != self.vim_paint_key {
+            self.vim_paint_key = vim_paint_key;
+            self.page_curl.clear();
+        }
         if self.native_book_path != self.book_path {
             self.reader_render_blocks = None;
             self.native_events.clear();
@@ -198,45 +210,19 @@ impl ReaderApp {
             self.text_indent as f32,
         );
 
+        // vim 标签/光标只能定位到本帧绘制过的块；缓存本帧清空前，
+        // 先抓上一帧的块位置（同一页重复渲染，滞后一帧无感）。
+        let mut prev_blocks: Vec<(usize, f32)> = BLOCK_GALLEYS.with(|g| {
+            g.borrow()
+                .iter()
+                .filter(|e| e.key.chapter == self.current_chapter)
+                .map(|e| (e.key.block, e.rect.top()))
+                .collect()
+        });
+        prev_blocks.sort_by(|a, b| a.1.total_cmp(&b.1));
+
         // Clear per-frame block galley cache
         BLOCK_GALLEYS.with(|bg| bg.borrow_mut().clear());
-
-        if self.tts_playing
-            && self.current_chapter != self.tts_current_chapter
-            && !self.tts_syncing_navigation
-        {
-            self.tts_detach_view();
-        }
-
-        // Set TTS read-along highlight block
-        if self.tts_playing && !self.tts_paused && self.current_chapter == self.tts_current_chapter
-        {
-            TTS_HIGHLIGHT_BLOCK.set(Some(BlockKey::new(
-                self.tts_current_chapter,
-                self.tts_current_block,
-            )));
-        } else {
-            TTS_HIGHLIGHT_BLOCK.set(None);
-        }
-
-        // Set CSC corrections for the current chapter into thread-local
-        CSC_CORRECTIONS.with(|csc| {
-            let mut map = csc.borrow_mut();
-            map.clear();
-            if self.csc_mode != reader_core::csc::CorrectionMode::None {
-                for ((ch, block_idx), corrs) in &self.csc_cache {
-                    if (!self.scroll_mode && *ch == self.current_chapter)
-                        || (self.scroll_mode
-                            && *ch >= self.continuous_scroll.start_chapter
-                            && *ch < self.continuous_scroll.loaded_end)
-                    {
-                        map.insert(BlockKey::new(*ch, *block_idx), corrs.clone());
-                    }
-                }
-            }
-        });
-        CSC_READWRITE.set(self.csc_mode == reader_core::csc::CorrectionMode::ReadWrite);
-        CSC_RECTS.with(|r| r.borrow_mut().clear());
 
         if self.reader_page_animation == "Realistic" {
             self.page_anim_progress = 1.;
@@ -414,6 +400,59 @@ impl ReaderApp {
                 })
                 .unwrap_or_default();
 
+            {
+                let mut vim_labels: std::collections::HashMap<usize, String> =
+                    std::collections::HashMap::new();
+                let mut vim_cursor: Option<(usize, usize)> = None;
+                // 分页/翻页（含 Realistic 卷页）不会留下可复用的 galley 缓存，
+                // 直接用当前页的块范围；连续滚动则用上一帧绘制过的块。
+                let mut visible_blocks: Vec<usize> = if !self.vim.active() {
+                    Vec::new()
+                } else if self.scroll_mode {
+                    prev_blocks.iter().map(|(block, _)| *block).collect()
+                } else {
+                    (block_start..block_end).collect()
+                };
+                visible_blocks.retain(|&block| {
+                    matches!(
+                        blocks.get(block),
+                        Some(ContentBlock::Heading { .. } | ContentBlock::Paragraph { .. })
+                    )
+                });
+                visible_blocks.dedup();
+                if self.vim.active() {
+                    if !self.vim.placed {
+                        if let Some(&mid) = visible_blocks.get(visible_blocks.len() / 2) {
+                            self.vim.cursor = (mid, 0);
+                            self.vim.placed = true;
+                        }
+                    }
+                    if self.vim.labels {
+                        let keys = ['a','s','d','f','z','x','c','q','w','e','r','t','g','b','y','u','i','o','p','n'];
+                        for (i, block) in visible_blocks.iter().take(keys.len()).enumerate() {
+                            vim_labels.insert(*block, keys[i].to_string());
+                        }
+                    }
+                    vim_cursor = Some(self.vim.cursor);
+                }
+                super::reader_block::set_vim_overlay(vim_labels, vim_cursor);
+            }
+
+            {
+                let mut notes_map: std::collections::HashMap<(usize, usize), String> =
+                    std::collections::HashMap::new();
+                if let Some(cfg) = &self.book_config {
+                    for h in &cfg.highlights {
+                        if let Some(n) = cfg.notes.iter().find(|n| n.highlight_id == h.id) {
+                            if !n.content.trim().is_empty() {
+                                notes_map.insert((h.chapter, h.start_block), n.content.clone());
+                            }
+                        }
+                    }
+                }
+                super::reader_block::set_highlight_notes(notes_map);
+            }
+
             if self.scroll_mode {
                 let mut layout_hasher = std::collections::hash_map::DefaultHasher::new();
                 text_width.to_bits().hash(&mut layout_hasher);
@@ -480,7 +519,6 @@ impl ReaderApp {
                     let scroll_delta_y = ui.input(|i| i.raw_scroll_delta.y);
                     self.continuous_scroll
                         .allow_prepend_after_user_scroll(scroll_delta_y);
-                    self.tts_detach_view();
                 }
                 let programmed_scroll = self.scroll_to_top
                     || scroll_adjustment != 0.
@@ -1178,13 +1216,8 @@ impl ReaderApp {
                     );
                 }
                 if !curl_consumed_frame
-                    && !self.show_sharing_panel
-                    && !self.show_stats
-                    && !self.show_export_dialog
                     && self.text_selection.is_none()
                     && self.clicked_highlight_id.is_none()
-                    && self.csc_popup.is_none()
-                    && !self.csc_custom_replace_active
                     && !self.show_review_panel
                 {
                     let hover_pos = ui.input(|i| i.pointer.hover_pos());
@@ -1210,24 +1243,14 @@ impl ReaderApp {
                         && self.sel_press_origin.is_none()
                         && ui.input(|i| i.pointer.primary_clicked())
                     {
-                        // Check if click hits a CSC correction (skip page turn if so)
-                        let hit_csc = CSC_RECTS.with(|rects| {
-                            if let Some(pos) = ui.input(|i| i.pointer.interact_pos()) {
-                                rects.borrow().iter().any(|cr| cr.rect.contains(pos))
-                            } else {
-                                false
-                            }
-                        });
-                        if !hit_csc {
-                            if let Some(pos) = ui.input(|i| i.pointer.interact_pos()) {
-                                if page_rect.contains(pos) {
-                                    if super::reader_chrome::center_click(page_rect, pos) {
-                                        self.reader_chrome.toggle(ui.input(|i| i.time));
-                                    } else if pos.x < page_rect.center().x {
-                                        action_prev_page = true;
-                                    } else {
-                                        action_next_page = true;
-                                    }
+                        if let Some(pos) = ui.input(|i| i.pointer.interact_pos()) {
+                            if page_rect.contains(pos) {
+                                if super::reader_chrome::center_click(page_rect, pos) {
+                                    self.reader_chrome.toggle(ui.input(|i| i.time));
+                                } else if pos.x < page_rect.center().x {
+                                    action_prev_page = true;
+                                } else {
+                                    action_next_page = true;
                                 }
                             }
                         }
@@ -1396,53 +1419,6 @@ impl ReaderApp {
         let block_galleys: Vec<BlockGalleyEntry> =
             BLOCK_GALLEYS.with(|bg| bg.borrow_mut().drain(..).collect());
 
-        let mut start_reading = None;
-        let mut follow_reading = false;
-        let mut tts_context_menu_open = false;
-        for entry in &block_galleys {
-            let target_id = entry.response.id.with("tts_read_from_here");
-            if entry.response.secondary_clicked() {
-                if let Some(pos) = entry.response.interact_pointer_pos() {
-                    let cursor = entry.galley.cursor_from_pos(pos - entry.rect.min);
-                    ui.ctx().data_mut(|data| {
-                        data.insert_temp(
-                            target_id,
-                            (entry.key.chapter, entry.key.block, cursor.ccursor.index),
-                        );
-                    });
-                }
-            }
-            let target = ui
-                .ctx()
-                .data(|data| data.get_temp::<(usize, usize, usize)>(target_id));
-            let was_open = entry.response.context_menu_opened();
-            entry.response.context_menu(|ui| {
-                if let Some(target) = target {
-                    if ui.button(self.i18n.t("tts.read_from_here")).clicked() {
-                        start_reading = Some(target);
-                        ui.close_menu();
-                    }
-                }
-                if ui
-                    .add_enabled(
-                        self.tts_playing && !self.tts_follow_view,
-                        egui::Button::new(self.i18n.t("tts.follow_reading")),
-                    )
-                    .clicked()
-                {
-                    follow_reading = true;
-                    ui.close_menu();
-                }
-            });
-            tts_context_menu_open |= was_open || entry.response.context_menu_opened();
-        }
-        if let Some((chapter, block_idx, char_offset)) = start_reading {
-            self.show_tts_panel = true;
-            self.tts_start_from_position(chapter, block_idx, char_offset);
-        } else if follow_reading {
-            self.tts_follow_playback();
-        }
-
         // Detect primary pointer press / drag / release for selection
         let pointer_pos = ui.ctx().input(|i| i.pointer.interact_pos());
         let primary_down = ui.ctx().input(|i| i.pointer.primary_down());
@@ -1474,6 +1450,31 @@ impl ReaderApp {
             None
         };
 
+        // Nearest text position when pressing in blank margins, so dragging from
+        // the left edge of a line still starts a selection.
+        let nearest_hit = |pos: egui::Pos2| -> Option<(usize, usize)> {
+            let entry = block_galleys
+                .iter()
+                .filter(|entry| {
+                    entry.key.chapter == self.current_chapter
+                        && entry.rect.height() > 0.
+                        && entry.rect.intersect(entry.clip).is_positive()
+                })
+                .min_by(|a, b| {
+                    let da = (pos.y - a.rect.center().y).abs()
+                        + (pos.x - a.rect.center().x).abs() * 0.01;
+                    let db = (pos.y - b.rect.center().y).abs()
+                        + (pos.x - b.rect.center().x).abs() * 0.01;
+                    da.total_cmp(&db)
+                })?;
+            let x = pos.x.clamp(entry.rect.left() + 1., entry.rect.right() - 1.);
+            let y = pos.y.clamp(entry.rect.top() + 1., entry.rect.bottom() - 1.);
+            let cursor = entry
+                .galley
+                .cursor_from_pos(egui::vec2(x - entry.rect.left(), y - entry.rect.top()));
+            Some((entry.key.block, cursor.ccursor.index))
+        };
+
         // Check if pointer is over a toolbar area (so we don't start selection there)
         let toolbar_id = egui::Id::new("sel_toolbar");
         let note_toolbar_id = egui::Id::new("hl_note_toolbar");
@@ -1488,9 +1489,9 @@ impl ReaderApp {
 
         if let Some(pos) = pointer_pos {
             const DRAG_THRESHOLD: f32 = 5.0;
-            if primary_pressed && !over_toolbar && !tts_context_menu_open {
+            if primary_pressed && !over_toolbar {
                 let origin = press_pos.unwrap_or(pos);
-                if let Some((block_idx, char_idx)) = hit_test(origin) {
+                if let Some((block_idx, char_idx)) = hit_test(origin).or_else(|| nearest_hit(origin)) {
                     // Record press origin; don't create TextSelection yet
                     self.sel_press_origin = Some((origin, block_idx, char_idx));
                     // Clear any existing finalized selection or highlight popup
@@ -1509,7 +1510,7 @@ impl ReaderApp {
             }
             // Press, motion and release can arrive in one rendered frame.
             // Retain the event's press origin and finalize that drag as well.
-            if (primary_down || primary_released) && !over_toolbar && !tts_context_menu_open {
+            if (primary_down || primary_released) && !over_toolbar {
                 // If we have a pending press origin but no selection yet, check threshold
                 if let Some((origin, block_idx, char_idx)) = self.sel_press_origin {
                     if (pos - origin).length() >= DRAG_THRESHOLD {
@@ -1563,7 +1564,7 @@ impl ReaderApp {
                 }
             }
 
-            if primary_released && !tts_context_menu_open {
+            if primary_released {
                 // Check if this was a click (no drag) on a highlighted region
                 let mut handled_as_highlight = false;
                 if let Some((press_pos, press_block, press_char)) = self.sel_press_origin.take() {
@@ -1600,25 +1601,17 @@ impl ReaderApp {
                         }
                     }
                     // Plain click on text (no highlight, no drag) 鈫?page turn
-                    let hit_csc_rect = CSC_RECTS
-                        .with(|rects| rects.borrow().iter().any(|cr| cr.rect.contains(press_pos)));
                     if !had_clicked_link
                         && !handled_as_highlight
-                        && !hit_csc_rect
                         && !self.scroll_mode
-                        && !self.show_sharing_panel
-                        && !self.show_stats
-                        && !self.show_export_dialog
                         && self.text_selection.is_none()
-                        && !self.csc_custom_replace_active
-                        && self.csc_popup.is_none()
                         && !self.show_review_panel
                     {
                         if let Some(page_rect) = self.paging_page_rect {
                             if page_rect.contains(press_pos) {
                                 if super::reader_chrome::center_click(page_rect, press_pos) {
                                     self.reader_chrome.toggle(ui.input(|i| i.time));
-                                } else {
+                                } else if self.mouse_page_turn {
                                     self.turn_reader_page(press_pos.x >= page_rect.center().x);
                                 }
                             }
@@ -1745,9 +1738,25 @@ impl ReaderApp {
             })
             .unwrap_or_default();
 
+        // Selection right-click → ask the AI panel about it.
+        if self.text_selection.is_some() && !selected_text.is_empty() {
+            let mut ask_ai = false;
+            for entry in &block_galleys {
+                entry.response.context_menu(|ui| {
+                    if ui.button(self.i18n.t("ai.ask_selection")).clicked() {
+                        ask_ai = true;
+                        ui.close_menu();
+                    }
+                });
+            }
+            if ask_ai {
+                self.open_ai_with_selection(selected_text.clone());
+            }
+        }
+
         // 鈹€鈹€ Show floating selection toolbar (when selection finalized) 鈹€鈹€
         if let Some(sel) = &self.text_selection {
-            if !sel.is_dragging && !selected_text.is_empty() && !self.csc_custom_replace_active {
+            if !sel.is_dragging && !selected_text.is_empty() {
                 let (sb, _, eb, _) = sel.normalized_range();
                 let has_hl = self.book_config.as_ref().is_some_and(|cfg| {
                     cfg.highlights.iter().any(|h| {
@@ -1762,19 +1771,16 @@ impl ReaderApp {
                     &selected_text,
                     self.sel_toolbar_pos,
                     has_hl,
-                    self.csc_mode == reader_core::csc::CorrectionMode::ReadWrite,
                 );
                 match res {
                     SelToolbarResult::KeepOpen => {}
-                    SelToolbarResult::Service(kind) => {
-                        self.start_reading_service(kind, selected_text.clone(), ui.ctx());
-                        self.text_selection = None;
-                    }
                     SelToolbarResult::Close => {
                         self.text_selection = None;
                     }
                     SelToolbarResult::CreateHighlight(color) => {
                         let sel_range = sel.normalized_range();
+                        let mut created_id: Option<String> = None;
+                        let mut preview_text = String::new();
                         if let Some(cfg) = &mut self.book_config {
                             let (sb, sc, eb, ec) = sel_range;
                             for entry in block_galleys
@@ -1793,8 +1799,15 @@ impl ReaderApp {
                                     char_len
                                 };
                                 if start < end {
+                                    let slice_text: String =
+                                        entry.text.chars().skip(start).take(end - start).collect();
+                                    preview_text.push_str(
+                                        &entry.text.chars().skip(start).take(end - start).collect::<String>(),
+                                    );
+                                    let new_id = reader_core::annotations::new_highlight_id();
+                                    created_id = Some(new_id.clone());
                                     cfg.highlights.push(reader_core::library::Highlight {
-                                        id: reader_core::annotations::new_highlight_id(),
+                                        id: new_id,
                                         chapter: self.current_chapter,
                                         start_block: idx,
                                         start_offset: start,
@@ -1802,12 +1815,27 @@ impl ReaderApp {
                                         end_offset: end,
                                         color: color.clone(),
                                         created_at: reader_core::now_secs(),
+                                        tags: Vec::new(),
+                                        text: slice_text,
                                     });
                                 }
                             }
                             if let Err(error) = cfg.save(&self.data_dir) {
                                 self.error_msg = Some(error.to_string());
                             };
+                        }
+                        // 仿 BN：高亮完成后直接弹出备注输入框
+                        if let Some(id) = created_id {
+                            self.note_popup = Some(crate::ui::note_popup::NotePopup {
+                                highlight_id: id.clone(),
+                                buffer: String::new(),
+                                focus: true,
+                                preview: preview_text.chars().take(160).collect(),
+                                tag_buf: String::new(),
+                    book_id: None,
+                    tag_focus: false,
+                            });
+                            self.last_highlight_undo = Some(id);
                         }
                         self.text_selection = None;
                     }
@@ -1825,145 +1853,7 @@ impl ReaderApp {
                         }
                         self.text_selection = None;
                     }
-                    SelToolbarResult::CustomReplace => {
-                        // Activate custom replacement popup 鈥?keep selection for reference
-                        self.csc_custom_replace_buf.clear();
-                        self.csc_custom_replace_active = true;
-                    }
                 }
-            }
-        }
-
-        // 鈹€鈹€ Custom CSC replacement popup (ReadWrite mode) 鈹€鈹€
-        if self.csc_custom_replace_active {
-            if let Some(sel) = &self.text_selection {
-                let popup_pos = self.sel_toolbar_pos;
-                let sel_range = sel.normalized_range();
-                let popup_id = egui::Id::new("csc_custom_replace_popup");
-                let mut close = false;
-                let mut submit = false;
-
-                egui::Area::new(popup_id)
-                    .fixed_pos(egui::pos2(popup_pos.x - 120.0, popup_pos.y - 80.0))
-                    .order(egui::Order::Foreground)
-                    .interactable(true)
-                    .show(ui.ctx(), |ui| {
-                        egui::Frame::popup(ui.style()).show(ui, |ui| {
-                            ui.label(self.i18n.t("csc.custom_replace_prompt"));
-                            ui.add_space(4.0);
-                            let resp = ui.add(
-                                super::design::text_edit(&mut self.csc_custom_replace_buf)
-                                    .desired_width(160.0)
-                                    .hint_text(self.i18n.t("csc.custom_replace_hint")),
-                            );
-                            // Auto-focus on first frame
-                            resp.request_focus();
-                            if resp.lost_focus()
-                                && ui.input(|i| i.key_pressed(egui::Key::Enter))
-                                && !self.csc_custom_replace_buf.is_empty()
-                            {
-                                submit = true;
-                            }
-                            ui.add_space(4.0);
-                            ui.horizontal(|ui| {
-                                if ui.button(self.i18n.t("csc.replace")).clicked()
-                                    && !self.csc_custom_replace_buf.is_empty()
-                                {
-                                    submit = true;
-                                }
-                                if ui.button(self.i18n.t("csc.cancel")).clicked() {
-                                    close = true;
-                                }
-                            });
-                        });
-                    });
-
-                if submit {
-                    // Create correction records for each selected character
-                    let (sb, sc, eb, ec) = sel_range;
-                    let replace_chars: Vec<char> = self.csc_custom_replace_buf.chars().collect();
-                    for entry in block_galleys
-                        .iter()
-                        .filter(|entry| entry.key.chapter == self.current_chapter)
-                    {
-                        let idx = entry.key.block;
-                        if idx < sb || idx > eb {
-                            continue;
-                        }
-                        let block_chars: Vec<char> = entry.text.chars().collect();
-                        let start = if idx == sb { sc } else { 0 };
-                        let end = if idx == eb {
-                            ec.min(block_chars.len())
-                        } else {
-                            block_chars.len()
-                        };
-                        // Map selected chars 1:1 to replacement chars
-                        for (i, pos) in (start..end).enumerate() {
-                            let original = block_chars[pos].to_string();
-                            let corrected = if i < replace_chars.len() {
-                                replace_chars[i].to_string()
-                            } else {
-                                continue;
-                            };
-                            if original == corrected {
-                                continue;
-                            }
-                            // Insert into csc_cache as Accepted
-                            let key = (self.current_chapter, idx);
-                            let corrs = self.csc_cache.entry(key).or_default();
-                            if let Some(existing) = corrs.iter_mut().find(|c| c.char_offset == pos)
-                            {
-                                existing.corrected = corrected.clone();
-                                existing.status = reader_core::epub::CorrectionStatus::Accepted;
-                            } else {
-                                corrs.push(reader_core::epub::CorrectionInfo {
-                                    original: original.clone(),
-                                    corrected: corrected.clone(),
-                                    confidence: 1.0,
-                                    char_offset: pos,
-                                    status: reader_core::epub::CorrectionStatus::Accepted,
-                                });
-                            }
-                            // Persist
-                            if let Some(cfg) = &mut self.book_config {
-                                if let Some(rec) = cfg.corrections.iter_mut().find(|r| {
-                                    r.chapter == self.current_chapter
-                                        && r.block_idx == idx
-                                        && r.char_offset == pos
-                                }) {
-                                    rec.corrected = corrected;
-                                    rec.status = "accepted".to_string();
-                                } else {
-                                    cfg.corrections
-                                        .push(reader_core::library::CorrectionRecord {
-                                            chapter: self.current_chapter,
-                                            block_idx: idx,
-                                            char_offset: pos,
-                                            original,
-                                            corrected,
-                                            status: "accepted".to_string(),
-                                        });
-                                }
-                            }
-                        }
-                    }
-                    if let Some(cfg) = &mut self.book_config {
-                        if let Err(error) = cfg.save(&self.data_dir) {
-                            self.error_msg = Some(error.to_string());
-                        };
-                    }
-                    close = true;
-                }
-
-                if close {
-                    self.csc_custom_replace_active = false;
-                    self.csc_custom_replace_buf.clear();
-                    self.text_selection = None;
-                }
-            } else {
-                // Selection was cleared externally
-                self.csc_custom_replace_active = false;
-                self.csc_custom_replace_buf.clear();
             }
         }
 
@@ -1994,7 +1884,7 @@ impl ReaderApp {
                                 |ui| {
                                     // Delete highlight button
                                     if ui
-                                        .small_button("馃棏")
+                                        .small_button("删除")
                                         .on_hover_text(self.i18n.t("context.delete_highlight"))
                                         .clicked()
                                     {
@@ -2008,7 +1898,7 @@ impl ReaderApp {
                                         close_popup = true;
                                     }
                                     // Close button
-                                    if ui.small_button("✕").clicked() {
+                                    if ui.small_button("x").clicked() {
                                         close_popup = true;
                                     }
                                 },
@@ -2023,7 +1913,6 @@ impl ReaderApp {
                                 .margin(super::design::Geometry::CARD_INSET)
                                 .desired_rows(3)
                                 .desired_width(300.0)
-                                .hint_text(self.i18n.t("context.note_hint")),
                         );
 
                         // Save button
@@ -2078,153 +1967,6 @@ impl ReaderApp {
             }
         }
 
-        // 鈹€鈹€ CSC correction click detection + popup 鈹€鈹€
-        {
-            // Check if user clicked on a correction rect (ReadWrite mode)
-            let any_click = ui.ctx().input(|i| i.pointer.primary_clicked());
-            if any_click && self.csc_popup.is_none() && self.text_selection.is_none() {
-                if let Some(click_pos) = ui.ctx().pointer_interact_pos() {
-                    CSC_RECTS.with(|rects| {
-                        let r = rects.borrow();
-                        for cr in r.iter() {
-                            if cr.rect.contains(click_pos) {
-                                self.csc_popup = Some(crate::app::CscPopupInfo {
-                                    chapter: cr.key.chapter,
-                                    block_idx: cr.key.block,
-                                    char_offset: cr.char_offset,
-                                    original: cr.original.clone(),
-                                    corrected: cr.corrected.clone(),
-                                    confidence: cr.confidence,
-                                    pos: egui::pos2(cr.rect.center().x, cr.rect.min.y),
-                                    just_opened: true,
-                                });
-                                break;
-                            }
-                        }
-                    });
-                }
-            }
 
-            // Render the CSC popup if open
-            if let Some(popup) = self.csc_popup.clone() {
-                let popup_id = egui::Id::new("csc_action_popup");
-                let mut close = false;
-                let mut action: Option<reader_core::epub::CorrectionStatus> = None;
-
-                let area_resp = egui::Area::new(popup_id)
-                    .fixed_pos(egui::pos2(popup.pos.x - 100.0, popup.pos.y - 70.0))
-                    .order(egui::Order::Foreground)
-                    .interactable(true)
-                    .show(ui.ctx(), |ui| {
-                        egui::Frame::popup(ui.style()).show(ui, |ui| {
-                            // Info line: original 鈫?corrected (confidence%)
-                            ui.horizontal(|ui| {
-                                ui.colored_label(Color32::from_rgb(220, 60, 50), &popup.original);
-                                ui.label("→");
-                                ui.colored_label(Color32::from_rgb(60, 180, 80), &popup.corrected);
-                                ui.label(format!(
-                                    "  {}: {:.1}%",
-                                    self.i18n.t("csc.confidence"),
-                                    popup.confidence * 100.0
-                                ));
-                            });
-                            ui.add_space(4.0);
-                            // Action buttons: Replace / Don't Replace
-                            ui.horizontal(|ui| {
-                                if ui
-                                    .button(self.i18n.t("csc.replace"))
-                                    .on_hover_text(self.i18n.t("csc.replace_tip"))
-                                    .clicked()
-                                {
-                                    action = Some(reader_core::epub::CorrectionStatus::Accepted);
-                                    close = true;
-                                }
-                                if ui
-                                    .button(self.i18n.t("csc.keep_original"))
-                                    .on_hover_text(self.i18n.t("csc.keep_original_tip"))
-                                    .clicked()
-                                {
-                                    action = Some(reader_core::epub::CorrectionStatus::Rejected);
-                                    close = true;
-                                }
-                            });
-                        });
-                    });
-
-                // Handle action
-                if let Some(new_status) = action {
-                    // Update status in csc_cache
-                    if let Some(corrs) = self.csc_cache.get_mut(&(popup.chapter, popup.block_idx)) {
-                        if let Some(c) = corrs
-                            .iter_mut()
-                            .find(|c| c.char_offset == popup.char_offset)
-                        {
-                            c.status = new_status.clone();
-                        }
-                    }
-                    // Persist to BookConfig
-                    let status_str = match &new_status {
-                        reader_core::epub::CorrectionStatus::Accepted => "accepted",
-                        reader_core::epub::CorrectionStatus::Rejected => "rejected",
-                        reader_core::epub::CorrectionStatus::Ignored => "ignored",
-                        _ => "pending",
-                    };
-                    if let Some(cfg) = &mut self.book_config {
-                        // Upsert correction record
-                        if let Some(rec) = cfg.corrections.iter_mut().find(|r| {
-                            r.chapter == popup.chapter
-                                && r.block_idx == popup.block_idx
-                                && r.char_offset == popup.char_offset
-                        }) {
-                            rec.status = status_str.to_string();
-                        } else {
-                            cfg.corrections
-                                .push(reader_core::library::CorrectionRecord {
-                                    chapter: popup.chapter,
-                                    block_idx: popup.block_idx,
-                                    char_offset: popup.char_offset,
-                                    original: popup.original.clone(),
-                                    corrected: popup.corrected.clone(),
-                                    status: status_str.to_string(),
-                                });
-                        }
-                        if let Err(error) = cfg.save(&self.data_dir) {
-                            self.error_msg = Some(error.to_string());
-                        };
-                    }
-                    self.push_feedback_log(format!(
-                        "[CSC] correction action: ch={} blk={} off={} '{}' → '{}' status={}",
-                        popup.chapter,
-                        popup.block_idx,
-                        popup.char_offset,
-                        popup.original,
-                        popup.corrected,
-                        status_str,
-                    ));
-                }
-
-                // Close on click outside popup
-                if !close {
-                    if let Some(ref mut p) = self.csc_popup {
-                        if p.just_opened {
-                            p.just_opened = false;
-                        } else if any_click {
-                            let popup_rect = area_resp.response.rect;
-                            let over_popup = ui
-                                .ctx()
-                                .pointer_interact_pos()
-                                .is_some_and(|pos| popup_rect.contains(pos));
-                            if !over_popup {
-                                close = true;
-                            }
-                        }
-                    }
-                }
-
-                if close {
-                    self.csc_popup = None;
-                }
-            }
-        }
     }
 }

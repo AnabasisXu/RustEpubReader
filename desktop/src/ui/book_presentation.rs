@@ -129,7 +129,7 @@ impl ReaderApp {
         });
     }
     pub(crate) fn close_book_presentation(&mut self) {
-        if let Err(error) = self.flush_reading_position_for_backup() {
+        if let Err(error) = self.flush_reading_position() {
             self.error_msg = Some(error);
         }
         self.clear_reader_navigation();
@@ -154,7 +154,6 @@ impl ReaderApp {
             from,
             covering_reader,
         });
-        self.flush_reading_stats();
     }
     pub(crate) fn advance_book_presentation(&mut self) {
         if let Some(Phase::Closing { started, .. }) = &self.book_presentation.phase {

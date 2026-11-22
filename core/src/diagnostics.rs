@@ -1,4 +1,16 @@
-//! Read-only process memory counters for opt-in diagnostics; unsupported counters are absent.
+//! Read-only process memory counters and opt-in debug logging.
+use std::sync::atomic::{AtomicBool, Ordering};
+
+static DEBUG_LOG_ENABLED: AtomicBool = AtomicBool::new(false);
+
+pub fn set_debug_logging_enabled(enabled: bool) {
+    DEBUG_LOG_ENABLED.store(enabled, Ordering::Relaxed);
+}
+
+pub fn is_debug_logging_enabled() -> bool {
+    DEBUG_LOG_ENABLED.load(Ordering::Relaxed)
+}
+
 pub fn peak_rss() -> Option<u64> {
     #[cfg(unix)]
     {

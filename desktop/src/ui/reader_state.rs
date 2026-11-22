@@ -1,4 +1,4 @@
-//! 阅读器状态与工具函数：线程局部缓存、排版常量、CSC 标注辅助、文本测量等。
+//! 阅读器状态与工具函数：线程局部缓存、排版常量、文本测量等。
 
 use std::cell::Cell;
 use std::cell::RefCell;
@@ -197,7 +197,7 @@ impl BlockKey {
     }
 }
 
-/// Per-frame cache entry used by selection, context menus, and position tracking.
+/// Per-frame cache entry used by selection and position tracking.
 #[derive(Clone)]
 pub(crate) struct BlockGalleyEntry {
     pub(crate) key: BlockKey,
@@ -211,49 +211,10 @@ pub(crate) struct BlockGalleyEntry {
 thread_local! {
     /// Collected during render_block, consumed by render_reader for selection state machine.
     pub(crate) static BLOCK_GALLEYS: RefCell<Vec<BlockGalleyEntry>> = const { RefCell::new(Vec::new()) };
-    /// TTS read-along highlight for the chapter and block currently being read.
-    pub(crate) static TTS_HIGHLIGHT_BLOCK: Cell<Option<BlockKey>> = const { Cell::new(None) };
-    /// CSC corrections keyed by chapter and block.
-    /// Set before rendering, read inside render_block for Ruby annotation painting.
-    pub(crate) static CSC_CORRECTIONS: RefCell<std::collections::HashMap<BlockKey, Vec<reader_core::epub::CorrectionInfo>>>
-        = RefCell::new(std::collections::HashMap::new());
-    /// Whether ReadWrite mode is active (enables click-on-correction popups).
-    pub(crate) static CSC_READWRITE: Cell<bool> = const { Cell::new(false) };
-    /// Correction rects collected during render_block, consumed in render_reader for click detection.
-    pub(crate) static CSC_RECTS: RefCell<Vec<CscRect>> = const { RefCell::new(Vec::new()) };
-}
-
-/// A clickable correction rect collected during rendering.
-pub(crate) struct CscRect {
-    pub(crate) key: BlockKey,
-    pub(crate) char_offset: usize,
-    pub(crate) original: String,
-    pub(crate) corrected: String,
-    pub(crate) confidence: f32,
-    pub(crate) rect: egui::Rect,
 }
 
 /// Selection highlight colour (temporary blue overlay while dragging / toolbar open).
 pub(crate) const SEL_BG: Color32 = Color32::from_rgba_premultiplied(66, 135, 245, 70);
-
-/// TTS read-along highlight colour (soft blue tint, works on both dark and light themes).
-pub(crate) const TTS_BG: Color32 = Color32::from_rgba_premultiplied(56, 132, 255, 30);
-
-/// TTS accent bar color (left edge indicator).
-pub(crate) const TTS_ACCENT: Color32 = Color32::from_rgb(56, 132, 255);
-
-/// Paint TTS read-along highlight: soft background + left accent bar.
-pub(crate) fn paint_tts_highlight(ui: &egui::Ui, rect: egui::Rect) {
-    let r = rect.expand2(egui::vec2(4.0, 2.0));
-    ui.painter()
-        .rect_filled(r, egui::CornerRadius::same(3), TTS_BG);
-    let bar = egui::Rect::from_min_size(
-        egui::pos2(r.left() - 3.0, r.top()),
-        egui::vec2(3.0, r.height()),
-    );
-    ui.painter()
-        .rect_filled(bar, egui::CornerRadius::same(1), TTS_ACCENT);
-}
 
 // Layout constants
 pub(crate) const DUAL_COLUMN_THRESHOLD: f32 = 1050.0;
@@ -325,10 +286,10 @@ pub(crate) fn highlight_bg_color(color: &reader_core::library::HighlightColor) -
 pub(crate) fn highlight_text_color(color: &reader_core::library::HighlightColor) -> Color32 {
     use reader_core::library::HighlightColor;
     match color {
-        HighlightColor::Yellow => Color32::from_rgb(120, 90, 0),
-        HighlightColor::Green => Color32::from_rgb(20, 100, 30),
-        HighlightColor::Blue => Color32::from_rgb(15, 60, 130),
-        HighlightColor::Pink => Color32::from_rgb(140, 20, 60),
+        HighlightColor::Yellow => Color32::from_rgb(255, 196, 0),
+        HighlightColor::Green => Color32::from_rgb(0, 190, 90),
+        HighlightColor::Blue => Color32::from_rgb(60, 150, 255),
+        HighlightColor::Pink => Color32::from_rgb(255, 80, 150),
     }
 }
 

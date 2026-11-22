@@ -3,8 +3,6 @@ use crate::app::ReaderApp;
 use eframe::egui;
 enum LibraryListAction {
     Open(String, usize),
-    Share(String),
-    Rename(String, String),
     Classify(String),
     Remove(String),
 }
@@ -150,21 +148,6 @@ impl ReaderApp {
                             .min_size(egui::vec2(40., 40.)),
                         |ui| {
                             design::menu_style(ui);
-                            if design::menu_item(ui, self.i18n.t("book.share"), false, false)
-                                .clicked()
-                            {
-                                action = Some(LibraryListAction::Share(entry.path.clone()));
-                                ui.memory_mut(|m| m.close_popup());
-                            }
-                            if design::menu_item(ui, self.i18n.t("book.rename"), false, false)
-                                .clicked()
-                            {
-                                action = Some(LibraryListAction::Rename(
-                                    entry.id.clone(),
-                                    entry.title.clone(),
-                                ));
-                                ui.memory_mut(|m| m.close_popup());
-                            }
                             if design::menu_item(ui, self.i18n.t("category.assign"), false, false)
                                 .clicked()
                             {
@@ -195,13 +178,8 @@ impl ReaderApp {
         action
     }
     pub fn render_library(&mut self, ui: &mut egui::Ui) {
-        if self.book_share.receive {
-            ui.disable();
-        }
         let mut action_open_path = None;
         let mut action_remove_path = None;
-        let mut action_export_path = None;
-        let mut action_rename = None;
         let mut action_classify = None;
         let mut action_open_dialog = false;
         let p = Palette::new(self.dark_mode);
@@ -221,17 +199,7 @@ impl ReaderApp {
                                 ui.spinner();
                                 ui.small(self.i18n.t("common.processing"));
                             }
-                            if self.cloud_sync.is_syncing() {
-                                ui.add_space(4.0);
-                                ui.add(egui::Spinner::new().size(14.0));
-                                ui.label(
-                                    egui::RichText::new(self.i18n.t("cloud.syncing_indicator"))
-                                        .small()
-                                        .color(p.muted),
-                                );
-                            }
                         });
-                        self.render_sync_meter(ui);
                         ui.label(
                             egui::RichText::new(
                                 self.i18n
@@ -243,9 +211,6 @@ impl ReaderApp {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if ui.button(self.i18n.t("archive.title")).clicked() {
                             self.library_show_archive = true;
-                        }
-                        if ui.button(self.i18n.t("transfer.receive")).clicked() {
-                            self.book_share.open_receive(&self.data_dir);
                         }
                         if ui
                             .button(self.i18n.t(if self.library_manage {
@@ -432,24 +397,6 @@ impl ReaderApp {
                         if ui
                             .add_enabled(
                                 !self.library_selected.is_empty(),
-                                egui::Button::new(self.i18n.t("manage.export")),
-                            )
-                            .clicked()
-                        {
-                            self.share_paths = self
-                                .library
-                                .books
-                                .iter()
-                                .filter(|e| self.library_selected.contains(&e.id))
-                                .map(|e| e.path.clone())
-                                .collect();
-                            self.export_library_path = None;
-                            self.share_mode = reader_core::export::ExportMode::Original;
-                            self.show_export_dialog = true;
-                        }
-                        if ui
-                            .add_enabled(
-                                !self.library_selected.is_empty(),
                                 egui::Button::new(self.i18n.t("archive.action")),
                             )
                             .clicked()
@@ -594,14 +541,8 @@ impl ReaderApp {
                                     LibraryListAction::Open(path, chapter) => {
                                         action_open_path = Some((path, chapter))
                                     }
-                                    LibraryListAction::Share(path) => {
-                                        action_export_path = Some(path)
-                                    }
                                     LibraryListAction::Classify(id) => {
                                         self.begin_classification(vec![id])
-                                    }
-                                    LibraryListAction::Rename(id, title) => {
-                                        action_rename = Some((id, title))
                                     }
                                     LibraryListAction::Remove(path) => {
                                         action_remove_path = Some(path)
@@ -828,36 +769,6 @@ impl ReaderApp {
                                                                 design::menu_style(ui);
                                                                 if design::menu_item(
                                                                     ui,
-                                                                    self.i18n.t("book.share"),
-                                                                    false,
-                                                                    false,
-                                                                )
-                                                                .clicked()
-                                                                {
-                                                                    action_export_path =
-                                                                        Some(e.path.clone());
-                                                                    ui.memory_mut(|m| {
-                                                                        m.close_popup()
-                                                                    });
-                                                                }
-                                                                if design::menu_item(
-                                                                    ui,
-                                                                    self.i18n.t("book.rename"),
-                                                                    false,
-                                                                    false,
-                                                                )
-                                                                .clicked()
-                                                                {
-                                                                    action_rename = Some((
-                                                                        e.id.clone(),
-                                                                        e.title.clone(),
-                                                                    ));
-                                                                    ui.memory_mut(|m| {
-                                                                        m.close_popup()
-                                                                    });
-                                                                }
-                                                                if design::menu_item(
-                                                                    ui,
                                                                     self.i18n.t("category.assign"),
                                                                     false,
                                                                     false,
@@ -990,35 +901,8 @@ impl ReaderApp {
         } else if let Some((path, chapter)) = action_open_path {
             self.open_book_from_path(&path, Some(chapter));
         }
-        if let Some(path) = action_export_path {
-            self.share_paths.clear();
-            self.share_mode = reader_core::export::ExportMode::Original;
-            self.export_library_path = Some(path);
-            self.show_export_dialog = true;
-        }
-        if let Some(rename) = action_rename {
-            self.rename_book = Some(rename);
-        }
     }
-    pub(super) fn export_selected_books(&mut self) -> bool {
-        let Some(directory) = rfd::FileDialog::new().pick_folder() else {
-            return false;
-        };
-        let entries: Vec<_> = self
-            .library
-            .books
-            .iter()
-            .filter(|e| self.share_paths.contains(&e.path))
-            .cloned()
-            .collect();
-        match reader_core::export::export_originals(&entries, &directory) {
-            Ok(_) => true,
-            Err(error) => {
-                self.error_msg = Some(self.i18n.tf1("book.export_failed", &error));
-                false
-            }
-        }
-    }
+
 }
 
 impl ReaderApp {
@@ -1058,7 +942,6 @@ impl ReaderApp {
                 ) {
                     Ok(()) => {
                         self.reload_library();
-                        self.cloud_sync.stop();
                     }
                     Err(error) => self.error_msg = Some(error),
                 }
@@ -1083,7 +966,6 @@ impl ReaderApp {
                                 self.error_msg = Some(error);
                             }
                             self.library_archive_delete = None;
-                            self.cloud_sync.stop();
                         }
                         if ui.button(self.i18n.t("settings.cancel")).clicked() {
                             self.library_archive_delete = None;
@@ -1140,7 +1022,6 @@ mod tests {
 
     #[test]
     fn long_book_names_keep_mixed_cover_rows_aligned_and_inside_the_viewport() {
-        keyring::set_default_credential_builder(keyring::mock::default_credential_builder());
         let directory = tempfile::tempdir().unwrap();
         let mut app = ReaderApp::from_data_dir(directory.path().to_string_lossy().into_owned());
         app.dark_mode = true;

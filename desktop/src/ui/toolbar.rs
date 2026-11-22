@@ -1,5 +1,5 @@
 use super::design::{Icon, Palette};
-use crate::app::{AppView, ReaderApp};
+use crate::app::ReaderApp;
 use eframe::egui::{self, Color32};
 
 fn translucent(color: Color32, alpha: u8) -> Color32 {
@@ -125,13 +125,6 @@ fn menu_action(
 impl ReaderApp {
     fn reader_menu_action(&mut self, ctx: &egui::Context, action: &str) {
         match action {
-            "sync" => {
-                if self.github_sync_enabled {
-                    self.cloud_start_sync();
-                } else {
-                    self.view = AppView::Sync;
-                }
-            }
             "toc" => {
                 self.show_toc = !self.show_toc;
                 if self.show_toc {
@@ -153,8 +146,6 @@ impl ReaderApp {
                 self.show_search = false;
                 self.show_annotations = false;
             }
-            "stats" => self.open_reading_stats(true),
-            "correction" => self.show_csc_settings = true,
             _ => {}
         }
         if ctx.screen_rect().width() < 980. {
@@ -194,7 +185,6 @@ impl ReaderApp {
                 self.review_panel_just_opened = false;
                 self.review_panel_scroll_offset = None;
                 self.show_settings = false;
-                self.show_csc_settings = false;
                 self.show_search = false;
                 self.show_annotations = false;
                 ui.memory_mut(|m| m.close_popup());
@@ -269,30 +259,43 @@ impl ReaderApp {
         });
     }
 
-    pub(crate) fn render_reader_correction_panel(&mut self, ctx: &egui::Context) {
-        if self.view != AppView::Reader || !self.show_csc_settings {
-            return;
+    /// 常驻的「笔记页」入口
+    pub(crate) fn render_notes_page_button(&mut self, ui: &mut egui::Ui) {
+        let p = Palette::new(self.dark_mode);
+        if circle_button(ui, Icon::Notes, "笔记", false, p).clicked() {
+            self.view = crate::app::AppView::Notes;
+            self.notes_page.dirty = true;
+            self.notes_page.focus = true;
         }
-        let mut open = self.show_csc_settings;
-        egui::Window::new(self.i18n.t("reader.correction"))
-            .open(&mut open)
-            .default_width(400.)
-            .collapsible(false)
-            .show(ctx, |ui| {
-                egui::ScrollArea::vertical()
-                    .max_height((ctx.screen_rect().height() - 140.).max(120.))
-                    .show(ui, |ui| {
-                        self.render_csc_settings(ui);
-                        ui.add_space(12.);
-                        if ui.button(self.i18n.t("annotations.corrections")).clicked() {
-                            self.show_annotations = true;
-                            self.show_search = false;
-                            self.show_settings = false;
-                            self.show_csc_settings = false;
-                        }
-                    });
-            });
-        self.show_csc_settings = open && self.show_csc_settings;
+    }
+
+    /// 常驻的「打开书籍」入口
+    pub(crate) fn render_quick_open_button(&mut self, ui: &mut egui::Ui) {
+        let p = Palette::new(self.dark_mode);
+        if circle_button(ui, Icon::Search, "打开书籍", false, p).clicked() {
+            self.quick_open.open = true;
+            self.quick_open.query.clear();
+            self.quick_open.selected = 0;
+            self.quick_open.focus = true;
+        }
+    }
+
+    /// 常驻的「书签与批注」入口，避免只能从 ⋯ 菜单里找。
+    pub(crate) fn render_annotations_button(&mut self, ui: &mut egui::Ui) {
+        let p = Palette::new(self.dark_mode);
+        if circle_button(
+            ui,
+            Icon::Bookmark,
+            self.i18n.t("annotations.title"),
+            self.show_annotations,
+            p,
+        )
+        .clicked()
+        {
+            self.show_annotations = !self.show_annotations;
+            self.show_settings = false;
+            self.show_search = false;
+        }
     }
 
     pub(crate) fn render_reader_menu_button(&mut self, ui: &mut egui::Ui) {
@@ -351,31 +354,8 @@ impl ReaderApp {
                                 ui.ctx().data_mut(|d| d.insert_temp(more_id, false));
                             }
                             ui.separator();
-                            let syncing = self.cloud_sync.is_syncing();
-                            if ui
-                                .add_enabled_ui(!syncing, |ui| {
-                                    menu_action(
-                                        ui,
-                                        Icon::Sync,
-                                        self.i18n.t(if syncing {
-                                            "reader.syncing_progress"
-                                        } else {
-                                            "reader.sync_progress"
-                                        }),
-                                        false,
-                                        p,
-                                    )
-                                })
-                                .inner
-                                .clicked()
-                            {
-                                self.reader_menu_action(ui.ctx(), "sync");
-                                ui.memory_mut(|m| m.close_popup());
-                            }
                             for (icon, key, action) in [
                                 (Icon::Search, "reader.search_book", "search"),
-                                (Icon::Notes, "toolbar.stats", "stats"),
-                                (Icon::Correction, "reader.correction", "correction"),
                             ] {
                                 if menu_action(ui, icon, self.i18n.t(key), false, p).clicked() {
                                     self.reader_menu_action(ui.ctx(), action);
@@ -383,32 +363,18 @@ impl ReaderApp {
                                 }
                             }
                         } else {
-                            ui.columns(2, |columns| {
-                                if menu_action(
-                                    &mut columns[0],
-                                    Icon::Toc,
-                                    self.i18n.t("nav.toc"),
-                                    true,
-                                    p,
-                                )
-                                .clicked()
-                                {
-                                    self.reader_menu_action(columns[0].ctx(), "toc");
-                                    columns[0].memory_mut(|m| m.close_popup());
-                                }
-                                if menu_action(
-                                    &mut columns[1],
-                                    Icon::Audio,
-                                    self.i18n.t("toolbar.tts"),
-                                    true,
-                                    p,
-                                )
-                                .clicked()
-                                {
-                                    self.show_tts_panel = !self.show_tts_panel;
-                                    columns[1].memory_mut(|m| m.close_popup());
-                                }
-                            });
+                            if menu_action(
+                                ui,
+                                Icon::Toc,
+                                self.i18n.t("nav.toc"),
+                                true,
+                                p,
+                            )
+                            .clicked()
+                            {
+                                self.reader_menu_action(ui.ctx(), "toc");
+                                ui.memory_mut(|m| m.close_popup());
+                            }
                             ui.add_space(6.);
                             ui.separator();
                             ui.add_space(6.);

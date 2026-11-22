@@ -22,6 +22,22 @@ fn record_selectable_galley(_ui: &egui::Ui, entry: BlockGalleyEntry) {
     BLOCK_GALLEYS.with(|galleys| galleys.borrow_mut().push(entry));
 }
 
+thread_local! {
+    static TITLE_FONT_READY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+pub(crate) fn set_title_font_ready(ready: bool) {
+    TITLE_FONT_READY.with(|value| value.set(ready));
+}
+
+fn title_font_name(body: &str) -> String {
+    if TITLE_FONT_READY.with(|value| value.get()) {
+        "ReaderTitleFont".to_string()
+    } else {
+        body.to_string()
+    }
+}
+
 pub(crate) fn family_from_name(name: &str) -> FontFamily {
     match name {
         "" => FontFamily::Name("ReaderFont".into()),
@@ -91,7 +107,74 @@ fn append_font_runs(
 
 // ── Content layout (was `ReaderApp::render_content_layout`, no `&self`) ──
 
-#[allow(clippy::too_many_arguments)]
+thread_local! {
+    static VIM_LABELS: std::cell::RefCell<std::collections::HashMap<usize, String>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+    static VIM_CURSOR: std::cell::RefCell<Option<(usize, usize)>> =
+        std::cell::RefCell::new(None);
+}
+
+thread_local! {
+    static HL_NOTES: std::cell::RefCell<std::collections::HashMap<(usize, usize), String>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
+pub(crate) fn set_vim_overlay(
+    labels: std::collections::HashMap<usize, String>,
+    cursor: Option<(usize, usize)>,
+) {
+    VIM_LABELS.with(|m| *m.borrow_mut() = labels);
+    VIM_CURSOR.with(|m| *m.borrow_mut() = cursor);
+}
+
+/// 返回当前帧可见块对应的 vim 标签目标块。
+pub(crate) fn vim_label_target(ch: char) -> Option<usize> {
+    VIM_LABELS.with(|m| {
+        m.borrow()
+            .iter()
+            .find(|(_, label)| label.chars().next() == Some(ch))
+            .map(|(block, _)| *block)
+    })
+}
+
+/// 绘制 vim 行首标签与光标竖线。只在本帧渲染过的块上调用。
+fn paint_vim_overlay(ui: &egui::Ui, block: usize, rect: egui::Rect, galley: &egui::Galley) {
+    let label = VIM_LABELS.with(|m| m.borrow().get(&block).cloned());
+    let cursor = VIM_CURSOR.with(|m| *m.borrow());
+    let caret = cursor.filter(|(b, _)| *b == block).map(|(_, c)| c);
+    if label.is_none() && caret.is_none() {
+        return;
+    }
+    let (top, bottom) = (rect.min.y, rect.max.y);
+    if let Some(label) = label {
+        // 页边距不足时把标签贴到页面内沿，避免被裁剪后看不见。
+        let x = (rect.min.x - 22.0).max(ui.clip_rect().min.x + 1.0);
+        ui.painter().text(
+            egui::pos2(x, top),
+            egui::Align2::LEFT_TOP,
+            label,
+            egui::FontId::monospace(13.0),
+            egui::Color32::from_rgb(255, 170, 60),
+        );
+    }
+    if let Some(caret) = caret {
+        let caret = caret.min(galley.text().chars().count());
+        let x = galley
+            .pos_from_cursor(&galley.from_ccursor(egui::text::CCursor::new(caret)))
+            .min
+            .x;
+        ui.painter().vline(
+            rect.min.x + x,
+            egui::Rangef::new(top, bottom),
+            egui::Stroke::new(2.0_f32, egui::Color32::from_rgb(255, 90, 90)),
+        );
+    }
+}
+
+pub(crate) fn set_highlight_notes(map: std::collections::HashMap<(usize, usize), String>) {
+    HL_NOTES.with(|m| *m.borrow_mut() = map);
+}
+
 pub(crate) fn render_content_layout(
     ui: &mut egui::Ui,
     h_margin: f32,
@@ -156,7 +239,7 @@ pub(crate) fn render_content_layout(
                     ui.spacing_mut().item_spacing.y = 0.;
                     if show_title {
                         let title_color = effective_text_color(bg_color, font_color);
-                        let title_family = family_from_name(font_family_name);
+                        let title_family = family_from_name(&title_font_name(font_family_name));
                         ui.vertical_centered(|ui| {
                             ui.label(
                                 egui::RichText::new(title)
@@ -212,6 +295,7 @@ pub(crate) fn render_content_layout(
                             );
                         }
                         if !replaced_heading {
+                            let top_before = ui.cursor().min.y;
                             render_block(
                                 ui,
                                 block,
@@ -226,6 +310,29 @@ pub(crate) fn render_content_layout(
                                 BlockKey::new(current_chapter, abs_idx),
                                 hl_ranges,
                             );
+                            if !hl_ranges.is_empty() {
+                                let bottom = ui.cursor().min.y;
+                                let area = egui::Rect::from_min_max(
+                                    egui::pos2(ui.max_rect().left(), top_before),
+                                    egui::pos2(ui.max_rect().right(), bottom),
+                                );
+                                if ui.rect_contains_pointer(area) {
+                                    if let Some(note) = HL_NOTES.with(|m| {
+                                        m.borrow().get(&(current_chapter, abs_idx)).cloned()
+                                    }) {
+                                        if !note.trim().is_empty() {
+                                            egui::show_tooltip_at_pointer(
+                                                ui.ctx(),
+                                                ui.layer_id(),
+                                                egui::Id::new(("hl_note", current_chapter, abs_idx)),
+                                                |ui| {
+                                                    ui.label(note);
+                                                },
+                                            );
+                                        }
+                                    }
+                                }
+                            }
                         }
                         for image in media.iter().filter(|image| image.after) {
                             super::reader_images::styled_paint(
@@ -479,7 +586,9 @@ fn render_block_content(
         );
         let (rect, _) = ui.allocate_exact_size(galley.size(), egui::Sense::hover());
         record_reader_galley(ui, &galley, rect.min, 0.);
-        ui.painter().galley(rect.min, galley, Color32::PLACEHOLDER);
+        ui.painter()
+            .galley(rect.min, galley.clone(), Color32::PLACEHOLDER);
+        paint_vim_overlay(ui, block_key.block, rect, &galley);
         ui.add_space(font_size * style.after.unwrap_or(para_spacing()));
         return;
     }
@@ -499,7 +608,6 @@ fn render_block_content(
                     text: line.text.clone(),
                     style: InlineStyle::Normal,
                     link_url: None,
-                    correction: None,
                 }];
                 let mut line_style = style.clone();
                 line_style.list.clear();
@@ -549,7 +657,6 @@ fn render_block_content(
                         InlineStyle::Normal
                     },
                     link_url: None,
-                    correction: None,
                 }];
                 let width = (column * cell.span as f32 - 12.).max(16.);
                 let galley = native_galley(
@@ -626,14 +733,13 @@ fn render_block_content(
                 true,
                 max_width,
                 font_color,
-                font_family_name,
+                &title_font_name(font_family_name),
                 &[],
                 &style,
             );
             if style.before.is_none() {
                 ui.add_space(font_size * 0.8);
             }
-            let is_tts_block = TTS_HIGHLIGHT_BLOCK.get() == Some(block_key);
             let galley = native_galley(ui, job, &style, max_width);
             record_reader_galley(
                 ui,
@@ -649,11 +755,10 @@ fn render_block_content(
             let (rect, response) =
                 ui.allocate_exact_size(galley_size, egui::Sense::click_and_drag());
 
-            if is_tts_block {
-                paint_tts_highlight(ui, rect);
-            }
             ui.painter()
                 .galley(rect.min, galley.clone(), Color32::PLACEHOLDER);
+
+            paint_vim_overlay(ui, block_key.block, rect, &galley);
             paint_native_ruby(
                 ui,
                 &galley,
@@ -718,110 +823,8 @@ fn render_block_content(
             ui.add_space(font_size * style.after.unwrap_or(0.4));
         }
         ContentBlock::Paragraph { spans, .. } => {
-            let is_readwrite = CSC_READWRITE.get();
-
-            // ── Build display spans and annotation info based on CSC state ──
-            // annotation tuple: (char_offset, top_text, confidence, status_tag)
-            //   status_tag: 0=Pending(ReadOnly ruby), 1=Pending(ReadWrite underline),
-            //               2=Accepted, 3=Rejected
-            let (display_spans, csc_annotations) = CSC_CORRECTIONS.with(|csc| {
-                let map = csc.borrow();
-                let empty_result = (
-                    spans.to_vec(),
-                    Vec::<(usize, String, String, f32, u8)>::new(),
-                );
-                let corrections = match map.get(&block_key) {
-                    Some(c) if !c.is_empty() => c,
-                    _ => return empty_result,
-                };
-
-                // Pre-build O(1) lookup by char_offset
-                let corr_map: std::collections::HashMap<usize, &reader_core::epub::CorrectionInfo> =
-                    corrections.iter().map(|c| (c.char_offset, c)).collect();
-
-                let mut modified = Vec::new();
-                let mut annotations: Vec<(usize, String, String, f32, u8)> = Vec::new();
-                let mut offset = 0usize;
-
-                for span in spans {
-                    let chars: Vec<char> = span.text.chars().collect();
-                    let mut new_text = String::new();
-                    for (i, &ch) in chars.iter().enumerate() {
-                        let abs = offset + i;
-                        if let Some(corr) = corr_map.get(&abs) {
-                            match (&corr.status, is_readwrite) {
-                                // Pending + ReadWrite: show original text (underline later)
-                                (reader_core::epub::CorrectionStatus::Pending, true) => {
-                                    new_text.push(ch);
-                                    annotations.push((
-                                        abs,
-                                        corr.corrected.clone(),
-                                        corr.original.clone(),
-                                        corr.confidence,
-                                        1,
-                                    ));
-                                }
-                                // Pending + ReadOnly: show corrected text, original gray above
-                                (reader_core::epub::CorrectionStatus::Pending, false) => {
-                                    if corr.corrected.chars().count() == 1 {
-                                        new_text.push_str(&corr.corrected);
-                                        annotations.push((
-                                            abs,
-                                            corr.original.clone(),
-                                            corr.corrected.clone(),
-                                            corr.confidence,
-                                            0,
-                                        ));
-                                    } else {
-                                        new_text.push(ch);
-                                    }
-                                }
-                                // Accepted: show corrected text, original gray above
-                                (reader_core::epub::CorrectionStatus::Accepted, _) => {
-                                    if corr.corrected.chars().count() == 1 {
-                                        new_text.push_str(&corr.corrected);
-                                        annotations.push((
-                                            abs,
-                                            corr.original.clone(),
-                                            corr.corrected.clone(),
-                                            corr.confidence,
-                                            2,
-                                        ));
-                                    } else {
-                                        new_text.push(ch);
-                                    }
-                                }
-                                // Rejected: show original text, corrected gray above
-                                (reader_core::epub::CorrectionStatus::Rejected, _) => {
-                                    new_text.push(ch);
-                                    annotations.push((
-                                        abs,
-                                        corr.corrected.clone(),
-                                        corr.original.clone(),
-                                        corr.confidence,
-                                        3,
-                                    ));
-                                }
-                                // Ignored: show original, no annotation
-                                _ => {
-                                    new_text.push(ch);
-                                }
-                            }
-                        } else {
-                            new_text.push(ch);
-                        }
-                    }
-                    modified.push(TextSpan {
-                        text: new_text,
-                        ..span.clone()
-                    });
-                    offset += chars.len();
-                }
-                (modified, annotations)
-            });
-
             let job = build_layout_job(
-                &display_spans,
+                spans,
                 font_size,
                 bg_color,
                 false,
@@ -831,7 +834,7 @@ fn render_block_content(
                 highlight_ranges,
                 &style,
             );
-            let text: String = display_spans.iter().map(|s| s.text.as_str()).collect();
+            let text: String = spans.iter().map(|s| s.text.as_str()).collect();
 
             // Layout into Galley, allocate space, and paint manually
             let galley = native_galley(ui, job, &style, max_width);
@@ -848,12 +851,10 @@ fn render_block_content(
             let galley_size = galley.size();
             let (rect, response) =
                 ui.allocate_exact_size(galley_size, egui::Sense::click_and_drag());
-            // TTS read-along highlight (paint behind text)
-            if TTS_HIGHLIGHT_BLOCK.get() == Some(block_key) {
-                paint_tts_highlight(ui, rect);
-            }
             ui.painter()
                 .galley(rect.min, galley.clone(), Color32::PLACEHOLDER);
+
+            paint_vim_overlay(ui, block_key.block, rect, &galley);
             paint_native_ruby(
                 ui,
                 &galley,
@@ -864,104 +865,6 @@ fn render_block_content(
                 font_color,
                 font_family_name,
             );
-
-            // ── Paint CSC annotations ──
-            if !csc_annotations.is_empty() {
-                let mapping: Vec<_> = (0..text.chars().count()).collect();
-                let ruby_font = FontId::new(font_size * 0.45, FontFamily::Proportional);
-                let ruby_color = Color32::from_gray(140);
-                // Pre-fetch hover position once, skip per-char hover checks if pointer outside block
-                let hover_in_block = ui.ctx().pointer_hover_pos().filter(|p| rect.contains(*p));
-
-                for &(char_offset, ref top_text, ref _main_text, confidence, tag) in
-                    &csc_annotations
-                {
-                    if char_offset >= mapping.len() {
-                        continue;
-                    }
-                    let gi = mapping[char_offset];
-                    let cursor_start = galley.from_ccursor(egui::text::CCursor::new(gi));
-                    let cursor_end = galley.from_ccursor(egui::text::CCursor::new(gi + 1));
-                    let pos_start = galley.pos_from_cursor(&cursor_start);
-                    let pos_end = galley.pos_from_cursor(&cursor_end);
-
-                    let x = rect.min.x + pos_start.min.x;
-                    // Use next cursor's min.x for character width; fallback to font_size
-                    let x2 = if pos_end.min.y == pos_start.min.y && pos_end.min.x > pos_start.min.x
-                    {
-                        rect.min.x + pos_end.min.x
-                    } else {
-                        // Next char wrapped to new line — estimate width from font size
-                        x + font_size
-                    };
-                    let y_top = rect.min.y + pos_start.min.y;
-                    let y_bottom = rect.min.y + pos_start.max.y;
-
-                    match tag {
-                        // ReadWrite + Pending: red underline + hover tooltip + click rect
-                        1 => {
-                            // Draw red underline
-                            let underline_y = y_bottom - 1.0;
-                            ui.painter().line_segment(
-                                [egui::pos2(x, underline_y), egui::pos2(x2, underline_y)],
-                                egui::Stroke::new(2.0_f32, Color32::from_rgb(220, 60, 50)),
-                            );
-
-                            // Hover tooltip: show corrected char + confidence
-                            let char_rect = egui::Rect::from_min_max(
-                                egui::pos2(x, y_top),
-                                egui::pos2(x2, y_bottom),
-                            );
-                            if let Some(hover_pos) = hover_in_block {
-                                if char_rect.contains(hover_pos) {
-                                    egui::show_tooltip_at_pointer(
-                                        ui.ctx(),
-                                        ui.layer_id(),
-                                        egui::Id::new("csc_rw_tooltip"),
-                                        |ui| {
-                                            ui.horizontal(|ui| {
-                                                ui.label(_main_text);
-                                                ui.colored_label(
-                                                    Color32::from_rgb(60, 180, 80),
-                                                    format!("→ {}", top_text),
-                                                );
-                                                ui.label(format!("({:.0}%)", confidence * 100.0));
-                                            });
-                                        },
-                                    );
-                                }
-                            }
-
-                            // Store rect for click detection (popup)
-                            let click_rect = egui::Rect::from_min_max(
-                                egui::pos2(x, y_top - 2.0),
-                                egui::pos2(x2, y_bottom + 2.0),
-                            );
-                            CSC_RECTS.with(|r| {
-                                r.borrow_mut().push(CscRect {
-                                    key: block_key,
-                                    char_offset,
-                                    original: _main_text.clone(), // original text
-                                    corrected: top_text.clone(),  // corrected text
-                                    confidence,
-                                    rect: click_rect,
-                                });
-                            });
-                        }
-                        // ReadOnly Pending / Accepted / Rejected: Ruby annotation (top_text above)
-                        0 | 2 | 3 => {
-                            ui.painter().text(
-                                egui::pos2(x, y_top - 1.0),
-                                egui::Align2::LEFT_BOTTOM,
-                                top_text,
-                                ruby_font.clone(),
-                                ruby_color,
-                            );
-                        }
-                        _ => {}
-                    }
-                }
-            }
 
             // Push into per-frame cache for the selection state machine
             record_selectable_galley(
@@ -982,7 +885,7 @@ fn render_block_content(
                     let cursor = galley.cursor_from_pos(hover_pos - rect.min);
                     let mut cumulative = 0;
                     let mut hovered_url = None;
-                    for span in &display_spans {
+                    for span in spans {
                         let span_len = span.text.chars().count();
                         if cursor.ccursor.index >= cumulative
                             && cursor.ccursor.index < cumulative + span_len
@@ -1100,14 +1003,11 @@ fn paint_native_ruby(
 /// Result from the selection toolbar.
 pub(crate) enum SelToolbarResult {
     KeepOpen,
-    Service(&'static str),
     Close,
     /// User clicked a highlight colour – create the highlight with saved selection.
     CreateHighlight(reader_core::library::HighlightColor),
     /// Delete all highlights overlapping this block.
     DeleteHighlight,
-    /// User wants to custom-replace the selected text (ReadWrite CSC mode).
-    CustomReplace,
 }
 
 /// Render the floating selection toolbar as an `egui::Area` above
@@ -1118,7 +1018,6 @@ pub(crate) fn show_selection_toolbar(
     text: &str,
     pos: egui::Pos2,
     has_highlight: bool,
-    is_csc_readwrite: bool,
 ) -> SelToolbarResult {
     let mut result = SelToolbarResult::KeepOpen;
     egui::Area::new(egui::Id::new("sel_toolbar"))
@@ -1168,21 +1067,10 @@ pub(crate) fn show_selection_toolbar(
                     if has_highlight
                         && ui
                             .small_button("x")
-                            .on_hover_text(i18n.t("context.delete_highlight"))
+                            .on_hover_text("删除笔记")
                             .clicked()
                     {
                         result = SelToolbarResult::DeleteHighlight;
-                    }
-                    // Dictionary
-                    if ui.small_button(i18n.t("context.dictionary")).clicked() {
-                        result = SelToolbarResult::Service("dictionary");
-                    }
-                    if ui.small_button(i18n.t("context.translate")).clicked() {
-                        result = SelToolbarResult::Service("translate");
-                    }
-                    // Custom Replace (only in ReadWrite CSC mode)
-                    if is_csc_readwrite && ui.small_button(i18n.t("csc.custom_replace")).clicked() {
-                        result = SelToolbarResult::CustomReplace;
                     }
                 });
             });
@@ -1566,13 +1454,11 @@ mod tests {
                         text: prefix.into(),
                         style: InlineStyle::Normal,
                         link_url: None,
-                        correction: None,
                     },
                     TextSpan {
                         text: ending.into(),
                         style: InlineStyle::Bold,
                         link_url: Some("#note".into()),
-                        correction: None,
                     },
                 ];
                 let _ = ctx.run(egui::RawInput::default(), |ctx| {
@@ -1743,7 +1629,6 @@ mod tests {
             text: "你好！”".to_owned(),
             style: InlineStyle::Normal,
             link_url: None,
-            correction: None,
         }];
         let job = build_layout_job(
             &spans,
@@ -1787,7 +1672,6 @@ mod tests {
                         text: "A native publication paragraph with a heading that wraps across multiple lines".into(),
                         style: InlineStyle::Normal,
                         link_url: None,
-                        correction: None,
                     }];
                     let job = build_layout_job(
                         &spans,

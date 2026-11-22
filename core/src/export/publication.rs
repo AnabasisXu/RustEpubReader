@@ -158,62 +158,6 @@ fn patch(
     }
     let mut edits: BTreeMap<usize, (usize, String)> = BTreeMap::new();
     let mut decorations: BTreeMap<usize, Vec<String>> = BTreeMap::new();
-    let mut corrections = std::collections::HashSet::new();
-    if matches!(mode, ExportMode::WithCorrections | ExportMode::Full) {
-        for c in cfg
-            .corrections
-            .iter()
-            .filter(|c| c.chapter == index && c.status.eq_ignore_ascii_case("accepted"))
-        {
-            let source = chapter
-                .blocks
-                .get(c.block_idx)
-                .map(text)
-                .ok_or("Correction block no longer exists")?;
-            if source
-                .chars()
-                .skip(c.char_offset)
-                .take(c.original.chars().count())
-                .collect::<String>()
-                != c.original
-                || c.original.trim().is_empty()
-            {
-                return Err("Correction no longer matches the original text".into());
-            }
-            let mapping = mapped
-                .get(c.block_idx)
-                .and_then(Option::as_ref)
-                .ok_or("Cannot map correction to original markup")?;
-            let selected: Vec<usize> = mapping
-                .iter()
-                .skip(c.char_offset)
-                .take(c.original.chars().count())
-                .flatten()
-                .copied()
-                .collect();
-            if selected.is_empty() {
-                return Err("Cannot map correction range".into());
-            }
-            let first = *selected.first().unwrap();
-            let last = *selected.last().unwrap();
-            for (a, atom) in atoms.iter().enumerate().take(last + 1).skip(first) {
-                if !corrections.insert(a) {
-                    return Err("Overlapping accepted corrections".into());
-                }
-                edits.insert(
-                    atom.start,
-                    (
-                        atom.end,
-                        if a == first {
-                            crate::escape_html(&c.corrected)
-                        } else {
-                            String::new()
-                        },
-                    ),
-                );
-            }
-        }
-    }
     if matches!(mode, ExportMode::WithAnnotations | ExportMode::Full) {
         for h in cfg.highlights.iter().filter(|h| h.chapter == index) {
             if h.start_block > h.end_block || h.end_block >= chapter.blocks.len() {
@@ -341,18 +285,13 @@ pub(super) fn export(
         } else {
             let book = EpubBook::open_lazy(source)?;
             let count = book.chapters.len();
-            if (matches!(mode, ExportMode::WithCorrections | ExportMode::Full)
-                && cfg
-                    .corrections
-                    .iter()
-                    .any(|c| c.status.eq_ignore_ascii_case("accepted") && c.chapter >= count))
-                || (matches!(mode, ExportMode::WithAnnotations | ExportMode::Full)
-                    && (cfg.highlights.iter().any(|h| h.chapter >= count)
-                        || cfg.bookmarks.iter().any(|b| b.chapter >= count)
-                        || cfg
-                            .notes
-                            .iter()
-                            .any(|n| !cfg.highlights.iter().any(|h| h.id == n.highlight_id))))
+            if matches!(mode, ExportMode::WithAnnotations | ExportMode::Full)
+                && (cfg.highlights.iter().any(|h| h.chapter >= count)
+                    || cfg.bookmarks.iter().any(|b| b.chapter >= count)
+                    || cfg
+                        .notes
+                        .iter()
+                        .any(|n| !cfg.highlights.iter().any(|h| h.id == n.highlight_id)))
             {
                 return Err(
                     "Export contains annotations that no longer match publication chapters".into(),
@@ -364,14 +303,9 @@ pub(super) fn export(
                     .map_err(|e| e.to_string())?;
             let mut changes = std::collections::HashMap::new();
             for i in 0..book.chapters.len() {
-                let needed = (matches!(mode, ExportMode::WithCorrections | ExportMode::Full)
-                    && cfg
-                        .corrections
-                        .iter()
-                        .any(|c| c.chapter == i && c.status.eq_ignore_ascii_case("accepted")))
-                    || (matches!(mode, ExportMode::WithAnnotations | ExportMode::Full)
-                        && (cfg.highlights.iter().any(|h| h.chapter == i)
-                            || cfg.bookmarks.iter().any(|h| h.chapter == i)));
+                let needed = matches!(mode, ExportMode::WithAnnotations | ExportMode::Full)
+                    && (cfg.highlights.iter().any(|h| h.chapter == i)
+                        || cfg.bookmarks.iter().any(|h| h.chapter == i));
                 if !needed {
                     continue;
                 }

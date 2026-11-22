@@ -67,9 +67,6 @@ impl ReaderApp {
             )
         });
         if self.view != AppView::Reader
-            || self.show_csc_settings
-            || self.show_stats
-            || self.show_export_dialog
             || self.show_language
             || self.show_about
         {
@@ -111,17 +108,13 @@ impl ReaderApp {
         let tools_busy = self.show_reader_introduction
             || ctx.memory(|m| m.any_popup_open())
             || ctx.wants_keyboard_input()
-            || self.show_csc_settings
             || self.show_settings
             || self.show_search
             || self.show_annotations
             || self.show_review_panel
-            || self.show_stats
-            || self.show_export_dialog
             || self.show_language
             || self.show_about
-            || self.text_selection.is_some()
-            || self.csc_popup.is_some();
+            || self.text_selection.is_some();
         self.reader_chrome.update(
             now,
             true,
@@ -183,6 +176,9 @@ impl ReaderApp {
                     if !self.reader_chrome.visible {
                         ui.disable();
                     }
+                    self.render_notes_page_button(ui);
+                    self.render_quick_open_button(ui);
+                    self.render_annotations_button(ui);
                     self.render_reader_menu_button(ui);
                 });
             if !self.reader_navigation.history.is_empty() {
@@ -240,7 +236,6 @@ mod tests {
 
     #[test]
     fn hiding_and_revealing_preserve_the_reading_viewport() {
-        keyring::set_default_credential_builder(keyring::mock::default_credential_builder());
         let dir = tempfile::tempdir().unwrap();
         let mut app = ReaderApp::from_data_dir(dir.path().to_string_lossy().into_owned());
         app.view = AppView::Reader;
@@ -285,7 +280,6 @@ mod tests {
     }
     #[test]
     fn open_menu_revives_fading_controls_and_keeps_them_visible() {
-        keyring::set_default_credential_builder(keyring::mock::default_credential_builder());
         let dir = tempfile::tempdir().unwrap();
         let mut app = ReaderApp::from_data_dir(dir.path().to_string_lossy().into_owned());
         app.view = AppView::Reader;

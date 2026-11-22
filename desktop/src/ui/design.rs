@@ -296,45 +296,6 @@ pub fn animated_side_panel(
         .inner
 }
 
-pub fn animated_top_panel(
-    ctx: &egui::Context,
-    id: &'static str,
-    height: f32,
-    expanded: bool,
-    fill: Color32,
-    contents: impl FnOnce(&mut egui::Ui),
-) {
-    let p = ctx.animate_bool_with_time(egui::Id::new(id).with("slide"), expanded, 0.18);
-    if p > 0. && p < 1. {
-        ctx.data_mut(|d| d.insert_temp(egui::Id::new("panels_animating"), true));
-        ctx.request_repaint();
-    }
-    if p <= 0. {
-        return;
-    }
-    egui::TopBottomPanel::top(id)
-        .resizable(false)
-        .exact_height(height * p)
-        .frame(egui::Frame::default().fill(fill))
-        .show(ctx, |ui| {
-            let r = ui.max_rect();
-            let rect = egui::Rect::from_min_size(
-                egui::pos2(r.left() + 16., r.bottom() - height + 8.),
-                egui::vec2((r.width() - 32.).max(0.), height - 16.),
-            );
-            let mut child = ui.new_child(
-                egui::UiBuilder::new()
-                    .id_salt("sliding_contents")
-                    .max_rect(rect),
-            );
-            child.set_clip_rect(ui.clip_rect().intersect(r));
-            if p < 1. {
-                child.disable();
-            }
-            contents(&mut child);
-        });
-}
-
 pub fn text_edit(text: &mut dyn egui::TextBuffer) -> egui::TextEdit<'_> {
     egui::TextEdit::singleline(text)
         .margin(Geometry::FIELD_MARGIN)
@@ -402,55 +363,6 @@ pub fn navigation_item(
     );
     paint_navigation_item(ui, &response, icon, label, selected);
     response.on_hover_text(label)
-}
-
-pub fn sync_toggle(
-    ui: &mut egui::Ui,
-    value: &mut bool,
-    enabled: bool,
-    label: &str,
-) -> egui::Response {
-    let (rect, mut response) = ui.allocate_exact_size(
-        egui::vec2(44., Geometry::CONTROL_HEIGHT),
-        if enabled {
-            egui::Sense::click()
-        } else {
-            egui::Sense::hover()
-        },
-    );
-    if enabled && response.clicked() {
-        *value = !*value;
-        response.mark_changed();
-    }
-    response.widget_info(|| {
-        egui::WidgetInfo::selected(egui::WidgetType::Checkbox, enabled, *value, label)
-    });
-    let p = Palette::new(ui.visuals().dark_mode);
-    let track = egui::Rect::from_center_size(rect.center(), egui::vec2(44., 24.));
-    let progress = ui.ctx().animate_bool(response.id, *value);
-    ui.painter().rect_filled(
-        track,
-        12.,
-        if *value && enabled {
-            BUTTON_BLUE
-        } else {
-            p.border
-        },
-    );
-    ui.painter().circle_filled(
-        egui::pos2(track.left() + 12. + progress * 20., track.center().y),
-        9.,
-        if enabled { Color32::WHITE } else { p.muted },
-    );
-    if response.has_focus() {
-        ui.painter().rect_stroke(
-            track.expand(2.),
-            14.,
-            Stroke::new(1.5_f32, p.accent),
-            egui::StrokeKind::Outside,
-        );
-    }
-    response
 }
 
 pub fn apply(ctx: &egui::Context, dark: bool) {
@@ -530,20 +442,16 @@ pub fn apply(ctx: &egui::Context, dark: bool) {
 #[derive(Clone, Copy)]
 pub enum Icon {
     Book,
-    Sync,
     Search,
     Toc,
     Notes,
     Settings,
     Back,
     Return,
-    Audio,
     Close,
     Bookmark,
     More,
-    Correction,
     Export,
-    Import,
     Sun,
     Moon,
 }
@@ -558,7 +466,7 @@ pub fn paint_icon(p: &egui::Painter, rect: egui::Rect, icon: Icon, color: Color3
         ));
     };
     match icon {
-        Icon::Export | Icon::Import => {
+        Icon::Export => {
             line(&[(-8., 1.), (-8., 8.), (8., 8.), (8., 1.)]);
             if matches!(icon, Icon::Export) {
                 line(&[(0., 3.), (0., -9.)]);
@@ -614,12 +522,6 @@ pub fn paint_icon(p: &egui::Painter, rect: egui::Rect, icon: Icon, color: Color3
                 (0., -8.),
                 (4., -9.),
             ]);
-        }
-        Icon::Sync => {
-            line(&[(-8., -1.), (-7., -6.), (-3., -8.), (3., -8.), (8., -3.)]);
-            line(&[(8., -8.), (8., -3.), (3., -3.)]);
-            line(&[(8., 1.), (7., 6.), (3., 8.), (-3., 8.), (-8., 3.)]);
-            line(&[(-8., 8.), (-8., 3.), (-3., 3.)]);
         }
         Icon::Search => {
             p.circle_stroke(pt(-2., -2.), 6.0, s);
@@ -689,23 +591,7 @@ pub fn paint_icon(p: &egui::Painter, rect: egui::Rect, icon: Icon, color: Color3
                 p.circle_filled(pt(x, 0.), 1.5, color);
             }
         }
-        Icon::Correction => {
-            line(&[(-8., -8.), (2., -8.), (2., 2.), (-8., 2.), (-8., -8.)]);
-            line(&[(-5., -4.), (-1., -4.)]);
-            line(&[(-1., 6.), (3., 10.), (10., 2.)]);
-        }
-        Icon::Audio => {
-            line(&[
-                (-8., -3.),
-                (-4., -3.),
-                (1., -8.),
-                (1., 8.),
-                (-4., 3.),
-                (-8., 3.),
-                (-8., -3.),
-            ]);
-            line(&[(5., -5.), (8., 0.), (5., 5.)]);
-        }
+
     }
 }
 pub fn icon_button(ui: &mut egui::Ui, icon: Icon, label: &str, active: bool) -> egui::Response {

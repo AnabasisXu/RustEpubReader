@@ -295,20 +295,6 @@ impl ReaderApp {
         );
         child.set_clip_rect(physical);
         let old_galleys = BLOCK_GALLEYS.with(|g| std::mem::take(&mut *g.borrow_mut()));
-        let old_csc = CSC_RECTS.with(|g| std::mem::take(&mut *g.borrow_mut()));
-        let old_corrections = CSC_CORRECTIONS.with(|g| std::mem::take(&mut *g.borrow_mut()));
-        CSC_CORRECTIONS.with(|g| {
-            if self.csc_mode != reader_core::csc::CorrectionMode::None {
-                *g.borrow_mut() = self
-                    .csc_cache
-                    .iter()
-                    .filter(|((ch, _), _)| *ch == chapter)
-                    .map(|((ch, block), corrections)| {
-                        (BlockKey::new(*ch, *block), corrections.clone())
-                    })
-                    .collect();
-            }
-        });
         self.draw_curl_page(
             &mut child, physical, content, chapter, page, ranges, text_width, h_margin, font,
             &mut None,
@@ -321,8 +307,6 @@ impl ReaderApp {
             }
         }
         BLOCK_GALLEYS.with(|g| *g.borrow_mut() = old_galleys);
-        CSC_RECTS.with(|g| *g.borrow_mut() = old_csc);
-        CSC_CORRECTIONS.with(|g| *g.borrow_mut() = old_corrections);
         let shapes: Vec<ClippedShape> = ctx
             .graphics_mut(|g| std::mem::take(g.entry(layer)))
             .all_entries()
@@ -379,13 +363,9 @@ impl ReaderApp {
         {
             self.page_curl.clear();
         }
-        let blocked = self.show_stats
-            || self.show_export_dialog
-            || self.show_review_panel
+        let blocked = self.show_review_panel
             || self.text_selection.is_some()
-            || self.clicked_highlight_id.is_some()
-            || self.csc_popup.is_some()
-            || self.csc_custom_replace_active;
+            || self.clicked_highlight_id.is_some();
         let escape = ui.input(|i| i.key_pressed(egui::Key::Escape) || !i.focused);
         if blocked {
             self.page_curl.clear();
@@ -516,7 +496,6 @@ impl ReaderApp {
                     self.page_block_ranges = turn.target_ranges;
                     self.total_pages = self.page_block_ranges.len().max(1);
                     self.pages_dirty = false;
-                    self.tts_detach_view();
                     self.sel_press_origin = None;
                     let block = self
                         .page_block_ranges
@@ -610,7 +589,12 @@ impl ReaderApp {
                 );
             }
         }
-        let edge = (rect.width() * if dual { 0.14 } else { 0.28 }).max(48.);
+        // 鼠标翻页由设置控制；关闭时不给边缘拖拽留热区，选字不会被抢。
+        let edge = if self.mouse_page_turn {
+            (rect.width() * if dual { 0.14 } else { 0.28 }).max(48.)
+        } else {
+            0.0
+        };
         let pointer = ui.input(|i| i.pointer.interact_pos());
         let edge_direction = pointer
             .filter(|p| {
@@ -1210,10 +1194,11 @@ mod integration_tests {
     use eframe::egui::Pos2;
     use reader_core::epub::{Chapter, ContentBlock, EpubBook};
     fn setup() -> (tempfile::TempDir, ReaderApp, egui::Context) {
-        keyring::set_default_credential_builder(keyring::mock::default_credential_builder());
         let dir = tempfile::tempdir().unwrap();
         let mut app = ReaderApp::from_data_dir(dir.path().to_string_lossy().into_owned());
         app.reader_page_animation = "Realistic".into();
+        // 鼠标翻页默认关闭；翻页拖拽是独立能力，测试里显式打开
+        app.mouse_page_turn = true;
         app.view = crate::app::AppView::Reader;
         app.book = Some(EpubBook {
             chapter_store: None,
@@ -1233,7 +1218,6 @@ mod integration_tests {
                                 ),
                                 style: reader_core::epub::InlineStyle::Normal,
                                 link_url: None,
-                                correction: None,
                             }],
                             anchor_id: None,
                         })

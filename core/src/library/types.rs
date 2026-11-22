@@ -44,6 +44,10 @@ pub struct Highlight {
     pub end_offset: usize,
     pub color: HighlightColor,
     pub created_at: u64,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    #[serde(default)]
+    pub text: String,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -52,29 +56,6 @@ pub struct Note {
     pub content: String,
     pub created_at: u64,
     pub updated_at: u64,
-}
-
-#[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct CorrectionRecord {
-    pub chapter: usize,
-    pub block_idx: usize,
-    pub char_offset: usize,
-    pub original: String,
-    pub corrected: String,
-    pub status: String,
-}
-
-#[derive(Serialize, Deserialize, Clone, Debug, Default)]
-pub struct ReadingStats {
-    pub total_seconds: u64,
-    #[serde(default)]
-    pub sessions: Vec<ReadingSession>,
-}
-
-#[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct ReadingSession {
-    pub date: String,
-    pub seconds: u64,
 }
 
 // ── Core types ──
@@ -149,13 +130,6 @@ pub struct BookConfig {
     pub highlights: Vec<Highlight>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub notes: Vec<Note>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub corrections: Vec<CorrectionRecord>,
-    /// Number of resolved corrections at last contribution prompt.
-    #[serde(default, skip_serializing_if = "is_zero")]
-    pub last_contribute_prompt_count: usize,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub reading_stats: Option<ReadingStats>,
 }
 
 impl BookConfig {

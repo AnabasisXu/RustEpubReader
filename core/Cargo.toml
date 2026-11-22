@@ -6,12 +6,6 @@ license.workspace = true
 
 [features]
 default = []
-github-sync = ["dep:reqwest"]
-keychain = ["keyring"]
-# CSC dynamic-plugin client side. Pulls in `libloading` only (~50 KB binary cost).
-# The actual ONNX inference engine is downloaded separately at runtime
-# from the RustEpubReader-Model repo.
-csc = ["libloading"]
 
 [dependencies]
 sys-locale = "0.3.2"
@@ -24,17 +18,10 @@ serde = { version = "1", features = ["derive", "rc"] }
 serde_json = "1"
 sha2 = "0.10"
 base64 = "0.22"
-rsa = { version = "0.9", features = ["pem", "sha2"] }
 rand = "0.8"
-aes-gcm = "0.10"
-x25519-dalek = { version = "2", features = ["static_secrets"] }
-hkdf = "0.12"
-qrcode = { version = "0.14.1", default-features = false }
-quircs = "0.10.3"
 libc = "0.2"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "gif", "bmp"] }
 uuid = { version = "1", features = ["v4"] }
-keyring = { version = "3", optional = true }
 # TXT-to-EPUB
 chardetng = "0.1"
 encoding_rs = "0.8"
@@ -43,11 +30,7 @@ regex = "1"
 resvg = { version = "0.45.1", default-features = false, features = ["text", "raster-images", "system-fonts"] }
 zip = { version = "8.5.1", default-features = false, features = ["deflate"] }
 thiserror = "2"
-# CSC dynamic plugin loader
-libloading = { version = "0.8", optional = true }
 
-# Portable TLS backend for desktop and future mobile sync adapters.
-reqwest = { version = "0.12", optional = true, default-features = false, features = ["blocking", "json", "rustls-tls"] }
 
 [dev-dependencies]
 tempfile = "3"

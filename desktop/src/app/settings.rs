@@ -17,6 +17,10 @@ pub(super) struct AppSettings {
     #[serde(default = "default_scripts_enabled")]
     pub(super) scripts_enabled: bool,
     #[serde(default)]
+    pub(super) mouse_page_turn: bool,
+    #[serde(default = "super::default_shortcuts")]
+    pub(super) shortcuts: std::collections::BTreeMap<String, String>,
+    #[serde(default)]
     pub(super) css_policy: reader_core::epub::native::CssPolicy,
     pub(super) font_size: f32,
     #[serde(default, deserialize_with = "optional_appearance_setting")]
@@ -37,6 +41,8 @@ pub(super) struct AppSettings {
     pub(super) reader_font_family: String,
     #[serde(default = "default_sans")]
     pub(super) reader_cjk_font_family: String,
+    #[serde(default)]
+    pub(super) reader_title_font_family: String,
     pub(super) reader_page_animation: String,
     #[serde(default = "default_anim_speed")]
     pub(super) reader_page_animation_speed: f32,
@@ -52,8 +58,6 @@ pub(super) struct AppSettings {
     pub(super) last_book_path: Option<String>,
     #[serde(default)]
     pub(super) last_chapter: usize,
-    #[serde(default)]
-    pub(super) auto_start_sharing: bool,
     #[serde(default = "default_line_spacing")]
     pub(super) line_spacing: f32,
     #[serde(default = "default_para_spacing")]
@@ -64,42 +68,12 @@ pub(super) struct AppSettings {
     pub(super) title_font_scale: f32,
     #[serde(default)]
     pub(super) auto_scroll_speed: f32,
+    #[serde(default = "default_ai_base_url")]
+    pub(super) ai_base_url: String,
     #[serde(default)]
-    pub(super) tts_voice_name: String,
-    #[serde(default)]
-    pub(super) tts_rate: i32,
-    #[serde(default)]
-    pub(super) tts_volume: i32,
-    #[serde(default)]
-    pub(super) translate_api_url: String,
-    #[serde(default = "default_service_model")]
-    pub(super) translate_api_model: String,
-    #[serde(default = "legacy_service_provider")]
-    pub(super) translate_api_provider: String,
-    #[serde(default)]
-    pub(super) service_keys_configured: bool,
-    #[serde(default)]
-    pub(super) translate_api_key: String,
-    #[serde(default)]
-    pub(super) dictionary_api_url: String,
-    #[serde(default = "default_service_model")]
-    pub(super) dictionary_api_model: String,
-    #[serde(default = "legacy_service_provider")]
-    pub(super) dictionary_api_provider: String,
-    #[serde(default)]
-    pub(super) dictionary_api_key: String,
-    #[serde(default)]
-    pub(super) csc_mode: reader_core::csc::CorrectionMode,
-    #[serde(default)]
-    pub(super) csc_threshold: reader_core::csc::CscThreshold,
-    #[serde(default)]
-    pub(super) github_username: Option<String>,
-    #[serde(default)]
-    pub(super) github_sync_enabled: bool,
-    #[serde(default)]
-    pub(super) github_sync_contributions: bool,
-    #[serde(default)]
-    pub(super) github_repo_authorized: bool,
+    pub(super) ai_api_key: String,
+    #[serde(default = "default_ai_model")]
+    pub(super) ai_model: String,
 }
 
 // A malformed new appearance field must not discard unrelated legacy settings.
@@ -124,14 +98,7 @@ impl AppSettings {
     }
 
     pub(super) fn save(&self, data_dir: &str) -> Result<(), String> {
-        crate::ui::reading_services::save_keys([
-            self.translate_api_key.clone(),
-            self.dictionary_api_key.clone(),
-        ])?;
-        let mut stored = self.clone();
-        stored.translate_api_key.clear();
-        stored.dictionary_api_key.clear();
-        let bytes = serde_json::to_vec_pretty(&stored).map_err(|e| e.to_string())?;
+        let bytes = serde_json::to_vec_pretty(self).map_err(|e| e.to_string())?;
         reader_core::storage::replace(&Self::path(data_dir), &bytes)
     }
 
@@ -156,9 +123,7 @@ impl AppSettings {
                         .or(*chapter)
                         .unwrap_or(0),
                 )
-            } else if matches!(app.view, AppView::Reader | AppView::Sync)
-                && !app.book_presentation.is_closing()
-            {
+            } else if matches!(app.view, AppView::Reader) && !app.book_presentation.is_closing() {
                 (app.book_path.clone(), app.current_chapter)
             } else {
                 (None, 0)
@@ -176,6 +141,8 @@ impl AppSettings {
             library_list_mode: app.library_list_mode,
             library_sort_title: app.library_sort_title,
             scripts_enabled: app.scripts_enabled,
+            mouse_page_turn: app.mouse_page_turn,
+            shortcuts: app.shortcuts.clone(),
             css_policy: app.css_policy,
             font_size: app.font_size,
             reader_introduction_seen: Some(app.reader_introduction_seen),
@@ -191,6 +158,7 @@ impl AppSettings {
             reader_font_color: app.reader_font_color.map(Self::from_color),
             reader_font_family: app.reader_font_family.clone(),
             reader_cjk_font_family: app.reader_cjk_font_family.clone(),
+            reader_title_font_family: app.reader_title_font_family.clone(),
             reader_page_animation: app.reader_page_animation.clone(),
             reader_page_animation_speed: app.reader_page_animation_speed,
             reader_bg_image_path: app.reader_bg_image_path.clone(),
@@ -201,31 +169,14 @@ impl AppSettings {
             language: app.i18n.preference().code().to_string(),
             last_book_path,
             last_chapter,
-            auto_start_sharing: app.auto_start_sharing,
             line_spacing: app.line_spacing,
             para_spacing: app.para_spacing,
             text_indent: app.text_indent,
             title_font_scale: app.title_font_scale,
             auto_scroll_speed: app.auto_scroll_speed,
-            tts_voice_name: app.tts_voice_name.clone(),
-            tts_rate: app.tts_rate,
-            tts_volume: app.tts_volume,
-            translate_api_url: app.translate_api_url.clone(),
-            translate_api_model: app.translate_api_model.clone(),
-            translate_api_provider: app.translate_api_provider.clone(),
-            service_keys_configured: !app.translate_api_key.is_empty()
-                || !app.dictionary_api_key.is_empty(),
-            translate_api_key: app.translate_api_key.clone(),
-            dictionary_api_url: app.dictionary_api_url.clone(),
-            dictionary_api_model: app.dictionary_api_model.clone(),
-            dictionary_api_provider: app.dictionary_api_provider.clone(),
-            dictionary_api_key: app.dictionary_api_key.clone(),
-            csc_mode: app.csc_mode.clone(),
-            csc_threshold: app.csc_threshold.clone(),
-            github_username: app.github_username.clone(),
-            github_sync_enabled: app.github_sync_enabled,
-            github_sync_contributions: app.github_sync_contributions,
-            github_repo_authorized: app.github_repo_authorized,
+            ai_base_url: app.ai_base_url.clone(),
+            ai_api_key: app.ai_api_key.clone(),
+            ai_model: app.ai_model.clone(),
         }
     }
 
@@ -244,6 +195,7 @@ impl AppSettings {
         app.reader_font_color = self.reader_font_color.map(Self::to_color);
         app.reader_font_family = self.reader_font_family.clone();
         app.reader_cjk_font_family = self.reader_cjk_font_family.clone();
+        app.reader_title_font_family = self.reader_title_font_family.clone();
         app.reader_page_animation = self.reader_page_animation.clone();
         app.reader_page_animation_speed = self.reader_page_animation_speed.clamp(0.04, 0.40);
         app.reader_bg_image_path = self.reader_bg_image_path.clone();
@@ -261,88 +213,37 @@ impl AppSettings {
                 crate::ui::reading_themes::ReadingThemes::migrate(app.appearance_paints.clone())
             });
         app.apply_selected_reading_theme();
+        app.mouse_page_turn = self.mouse_page_turn;
+        if !self.shortcuts.is_empty() {
+            app.shortcuts = self.shortcuts.clone();
+        }
         app.scroll_mode = self.scroll_mode;
         app.force_single_column = self.force_single_column;
         app.show_toc = self.show_toc;
-        app.auto_start_sharing = self.auto_start_sharing;
         app.line_spacing = self.line_spacing.clamp(0.8, 2.5);
         app.para_spacing = self.para_spacing.clamp(0.0, 2.0);
         app.text_indent = self.text_indent.min(4);
         app.title_font_scale = self.title_font_scale.clamp(1.0, 2.5);
         app.auto_scroll_speed = self.auto_scroll_speed.clamp(0.0, 200.0);
+        app.ai_base_url = if self.ai_base_url.trim().is_empty() {
+            default_ai_base_url()
+        } else {
+            self.ai_base_url.clone()
+        };
+        app.ai_api_key = self.ai_api_key.clone();
+        app.ai_model = if self.ai_model.trim().is_empty() {
+            default_ai_model()
+        } else {
+            self.ai_model.clone()
+        };
         app.i18n.set_language(Language::from_code(&self.language));
-        if !self.tts_voice_name.is_empty() {
-            app.tts_voice_name = self.tts_voice_name.clone();
-        }
-        app.tts_rate = self.tts_rate;
-        app.tts_volume = self.tts_volume;
-        app.translate_api_url = self.translate_api_url.clone();
-        app.translate_api_model = self.translate_api_model.clone();
-        app.translate_api_provider = if self.translate_api_provider == "auto" {
-            if self.translate_api_url.is_empty()
-                || self.translate_api_url.contains("/chat/completions")
-            {
-                "openai".into()
-            } else {
-                "json".into()
-            }
-        } else {
-            self.translate_api_provider.clone()
-        };
-        app.translate_api_key = self.translate_api_key.clone();
-        app.dictionary_api_url = self.dictionary_api_url.clone();
-        app.dictionary_api_model = self.dictionary_api_model.clone();
-        app.dictionary_api_provider = if self.dictionary_api_provider == "auto" {
-            if self.dictionary_api_url.is_empty()
-                || self.dictionary_api_url.contains("/chat/completions")
-            {
-                "openai".into()
-            } else {
-                "json".into()
-            }
-        } else {
-            self.dictionary_api_provider.clone()
-        };
-        app.dictionary_api_key = self.dictionary_api_key.clone();
-        if !self.translate_api_key.is_empty() || !self.dictionary_api_key.is_empty() {
-            if let Err(error) = self.save(&app.data_dir) {
-                app.error_msg = Some(error);
-            }
-        } else if self.service_keys_configured
-            || !self.translate_api_url.is_empty()
-            || !self.dictionary_api_url.is_empty()
-        {
-            match crate::ui::reading_services::load_keys() {
-                Ok([translate, dictionary]) => {
-                    app.translate_api_key = translate;
-                    app.dictionary_api_key = dictionary;
-                }
-                Err(error) => {
-                    app.error_msg = Some(error);
-                }
-            }
-        }
-
-        app.csc_mode = self.csc_mode.clone();
-        app.csc_threshold = self.csc_threshold.clone();
-        app.github_username = self.github_username.clone();
-        app.github_sync_enabled = self.github_sync_enabled;
-        app.github_sync_contributions = self.github_sync_contributions;
-        // Restore GitHub token from OS credential store
-        if app.github_username.is_some() {
-            app.github_token = reader_core::sharing::keystore::load_github_token();
-        }
-        app.github_repo_authorized = self.github_repo_authorized && app.github_token.is_some();
-        if app.github_token.is_none() {
-            app.github_username = None;
-        }
         // last_book_path/last_chapter applied in Default::default after call
     }
 }
 
-fn default_service_model() -> String {
-    "gpt-4o-mini".into()
+fn default_ai_base_url() -> String {
+    "https://api.openai.com/v1".into()
 }
-fn legacy_service_provider() -> String {
-    "auto".into()
+fn default_ai_model() -> String {
+    "gpt-4o-mini".into()
 }

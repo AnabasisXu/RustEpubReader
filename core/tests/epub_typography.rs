@@ -117,7 +117,6 @@ fn css_units_cascade_and_image_bounds() {
             text: "正文".into(),
             style: reader_core::epub::InlineStyle::Normal,
             link_url: None,
-            correction: None,
         }],
     };
     let doc = NativeDocument::parse(
@@ -166,7 +165,6 @@ fn absolute_and_percentage_line_heights_inherit_computed_lengths() {
                 text: "正文".into(),
                 style: reader_core::epub::InlineStyle::Normal,
                 link_url: None,
-                correction: None,
             }],
             anchor_id: None,
             native_style: Default::default(),
@@ -186,7 +184,6 @@ fn root_text_decorations_variables_and_explicit_font_inheritance() {
             text: source.into(),
             style: reader_core::epub::InlineStyle::Normal,
             link_url: None,
-            correction: None,
         }],
         anchor_id: Some("p".into()),
         native_style: Default::default(),

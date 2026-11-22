@@ -1,20 +1,15 @@
 //! The core reader library exposing API for the desktop app and the Android bridge.
 pub mod appearance;
-pub mod book_share;
 pub mod cloud_progress;
 pub mod cloud_recent;
 pub mod cloud_sync;
-pub mod csc;
 pub mod diagnostics;
 pub mod epub;
 pub mod export;
-#[cfg(feature = "github-sync")]
-pub mod github_sync;
 pub mod i18n;
 pub mod image_resources;
 pub mod library;
 pub mod search;
-pub mod sharing;
 pub mod storage;
 pub mod txt;
 
@@ -140,8 +135,5 @@ pub fn bytes_hash(data: &[u8]) -> String {
     format!("{:x}", hasher.finalize())
 }
 pub mod annotations;
-pub mod backup;
 pub mod reading_activity;
 
-#[cfg(feature = "github-sync")]
-pub mod reading_services;

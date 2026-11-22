@@ -14,7 +14,7 @@ impl ReaderApp {
             "settings_panel",
             false,
             width,
-            self.show_settings && self.view == crate::app::AppView::Reader,
+            self.show_settings,
             &collapse_label,
             |ui| {
                 ui.spacing_mut().interact_size.y = 34.;
@@ -43,6 +43,9 @@ impl ReaderApp {
                             palette,
                             |ui| self.render_settings_modes(ui),
                         );
+                        settings_group(ui, "快捷键与鼠标".to_owned(), palette, |ui| {
+                            self.render_settings_shortcuts(ui)
+                        });
                         settings_group(
                             ui,
                             self.i18n.t("settings.font_group").to_owned(),
@@ -61,24 +64,12 @@ impl ReaderApp {
                             palette,
                             |ui| self.render_settings_layout(ui),
                         );
-                        let focus_services = ui
-                            .ctx()
-                            .data_mut(|data| {
-                                data.remove_temp::<bool>(egui::Id::new("focus-reading-services"))
-                            })
-                            .unwrap_or(false);
                         egui::CollapsingHeader::new(self.i18n.t("settings.more"))
                             .id_salt("appearance_more")
-                            .open(focus_services.then_some(true))
                             .show(ui, |ui| {
                                 self.render_settings_language(ui, palette.text);
                                 ui.add_space(12.);
-                                let services = ui.scope(|ui| {
-                                    self.render_settings_api(ui, palette.text, palette.muted)
-                                });
-                                if focus_services {
-                                    services.response.scroll_to_me(Some(egui::Align::Center));
-                                }
+                                self.render_settings_ai(ui, palette.text, palette.muted);
                                 ui.add_space(12.);
                                 if ui
                                     .checkbox(
@@ -368,7 +359,6 @@ impl ReaderApp {
         }
     }
     fn render_settings_fonts(&mut self, ui: &mut egui::Ui) {
-        self.render_font_library_window(ui);
         let enabled = self.css_policy != reader_core::epub::native::CssPolicy::Publisher;
         ui.add_enabled_ui(enabled, |ui| {
             ui.horizontal(|ui| {
@@ -452,14 +442,6 @@ impl ReaderApp {
                             ui.memory_mut(|m| m.close_popup());
                         }
                         ui.separator();
-                        if ui.button(self.i18n.t("fonts.import")).clicked() {
-                            self.import_reader_font(ui);
-                        }
-                        if ui.button(self.i18n.t("fonts.library")).clicked() {
-                            self.open_font_library(ui, true);
-                            ui.memory_mut(|m| m.close_popup());
-                        }
-                        ui.separator();
                         let te = ui.add(super::design::text_edit(&mut self.font_search));
                         if btn.clicked() {
                             te.request_focus();
@@ -489,7 +471,8 @@ impl ReaderApp {
                                     .system_font_names
                                     .iter()
                                     .filter(|n| {
-                                        !crate::app::is_cjk_font_name(n)
+                                        !(self.cjk_font_names.contains(n.as_str())
+                                            || crate::app::is_cjk_font_name(n))
                                             && (query.is_empty()
                                                 || n.to_lowercase().contains(&query))
                                     })
@@ -565,14 +548,6 @@ impl ReaderApp {
                     |ui| {
                         super::design::menu_style(ui);
                         ui.set_width(248.0);
-                        if ui.button(self.i18n.t("fonts.import")).clicked() {
-                            self.import_reader_font(ui);
-                        }
-                        if ui.button(self.i18n.t("fonts.library")).clicked() {
-                            self.open_font_library(ui, false);
-                            ui.memory_mut(|m| m.close_popup());
-                        }
-                        ui.separator();
                         let te = ui.add(super::design::text_edit(&mut self.cjk_font_search));
                         if btn.clicked() {
                             te.request_focus();
@@ -600,7 +575,8 @@ impl ReaderApp {
                                     .system_font_names
                                     .iter()
                                     .filter(|n| {
-                                        crate::app::is_cjk_font_name(n)
+                                        (self.cjk_font_names.contains(n.as_str())
+                                            || crate::app::is_cjk_font_name(n))
                                             && (query.is_empty()
                                                 || n.to_lowercase().contains(&query))
                                     })
@@ -618,6 +594,101 @@ impl ReaderApp {
                                         .clicked()
                                         {
                                             self.reader_cjk_font_family = name;
+                                            self.pages_dirty = true;
+                                            self.embedded_fonts_registered = false;
+                                            self.defer_custom_font_for_frame = true;
+                                            close_popup = true;
+                                        }
+                                    }
+                                }
+                            });
+                        if close_popup {
+                            ui.memory_mut(|m| m.close_popup());
+                        }
+                    },
+                );
+            });
+
+            // Title font family
+            ui.horizontal_wrapped(|ui| {
+                ui.label(self.i18n.t("settings.font_title"));
+                let label = if self.reader_title_font_family.is_empty() {
+                    self.i18n.t("fonts.follow_body").to_owned()
+                } else {
+                    self.reader_title_font_family.clone()
+                };
+                let title_popup_id = ui.make_persistent_id("title_font_family_popup");
+                let btn = ui.add(egui::Button::new(label).truncate());
+                if btn.clicked() {
+                    ui.memory_mut(|m| m.toggle_popup(title_popup_id));
+                }
+                egui::popup_below_widget(
+                    ui,
+                    title_popup_id,
+                    &btn,
+                    egui::PopupCloseBehavior::CloseOnClickOutside,
+                    |ui| {
+                        super::design::menu_style(ui);
+                        ui.set_width(248.0);
+                        if super::design::menu_item(
+                            ui,
+                            self.i18n.t("fonts.follow_body"),
+                            self.reader_title_font_family.is_empty(),
+                            false,
+                        )
+                        .clicked()
+                        {
+                            self.reader_title_font_family.clear();
+                            self.pages_dirty = true;
+                            self.embedded_fonts_registered = false;
+                            ui.memory_mut(|m| m.close_popup());
+                        }
+                        ui.separator();
+                        let te = ui.add(super::design::text_edit(&mut self.title_font_search));
+                        if btn.clicked() {
+                            te.request_focus();
+                        }
+                        let query = self.title_font_search.to_lowercase();
+                        let mut close_popup = false;
+                        egui::ScrollArea::vertical()
+                            .max_height(300.0)
+                            .show(ui, |ui| {
+                                for fam in ["Sans", "Serif", "Monospace"] {
+                                    if (query.is_empty() || fam.to_lowercase().contains(&query))
+                                        && super::design::menu_item(
+                                            ui,
+                                            fam,
+                                            self.reader_title_font_family == fam,
+                                            false,
+                                        )
+                                        .clicked()
+                                    {
+                                        self.reader_title_font_family = fam.to_string();
+                                        self.pages_dirty = true;
+                                        self.embedded_fonts_registered = false;
+                                        close_popup = true;
+                                    }
+                                }
+                                let names: Vec<String> = self
+                                    .system_font_names
+                                    .iter()
+                                    .filter(|n| {
+                                        query.is_empty() || n.to_lowercase().contains(&query)
+                                    })
+                                    .cloned()
+                                    .collect();
+                                if !names.is_empty() {
+                                    ui.separator();
+                                    for name in names {
+                                        if super::design::menu_item(
+                                            ui,
+                                            &name,
+                                            self.reader_title_font_family == name,
+                                            false,
+                                        )
+                                        .clicked()
+                                        {
+                                            self.reader_title_font_family = name;
                                             self.pages_dirty = true;
                                             self.embedded_fonts_registered = false;
                                             self.defer_custom_font_for_frame = true;
@@ -789,147 +860,111 @@ impl ReaderApp {
             ));
         }
     }
+}
 
-    fn render_settings_api(
+impl ReaderApp {
+    /// 快捷键映射 + 鼠标/Vim 开关。组合键写法：Ctrl+B、Alt+1、F2、Ctrl+Shift+J。
+    fn render_settings_ai(
         &mut self,
         ui: &mut egui::Ui,
         heading_color: Color32,
         subtitle_color: Color32,
     ) {
         ui.label(
-            egui::RichText::new(self.i18n.t("settings.api_title"))
-                .size(15.0)
+            egui::RichText::new(self.i18n.t("settings.ai_section"))
+                .size(13.)
                 .strong()
                 .color(heading_color),
         );
-        ui.add_space(4.0);
-
         ui.label(
-            egui::RichText::new(self.i18n.t("services.notice"))
+            egui::RichText::new(self.i18n.t("settings.ai_hint"))
                 .small()
                 .color(subtitle_color),
         );
-        ui.collapsing(self.i18n.t("services.title"), |ui| {
-            ui.label(self.i18n.t("services.protocol"));
-        });
-        // Translation API
-        ui.label(
-            egui::RichText::new(self.i18n.t("settings.translate_section"))
-                .size(13.0)
-                .strong()
-                .color(heading_color),
-        );
-        ui.add_space(2.0);
-
-        egui::ComboBox::from_id_salt("translate-api-provider")
-            .selected_text(self.i18n.t(if self.translate_api_provider == "json" {
-                "services.json"
-            } else {
-                "services.openai"
-            }))
-            .show_ui(ui, |ui| {
-                ui.selectable_value(
-                    &mut self.translate_api_provider,
-                    "openai".into(),
-                    self.i18n.t("services.openai"),
-                );
-                ui.selectable_value(
-                    &mut self.translate_api_provider,
-                    "json".into(),
-                    self.i18n.t("services.json"),
-                );
-            });
-        if self.translate_api_provider == "openai" {
-            ui.label(self.i18n.t("services.model"));
-            ui.add(
-                super::design::text_edit(&mut self.translate_api_model)
-                    .desired_width(f32::INFINITY),
-            );
-            ui.small(self.i18n.t("services.openai_hint"));
-        }
-        ui.label(
-            egui::RichText::new(self.i18n.t("settings.api_url"))
-                .size(12.0)
-                .color(subtitle_color),
-        );
+        ui.label(self.i18n.t("settings.ai_base_url"));
         ui.add(
-            super::design::text_edit(&mut self.translate_api_url)
-                .hint_text("https://api.example.com/v1")
+            super::design::text_edit(&mut self.ai_base_url)
+                .hint_text("https://api.openai.com/v1")
                 .desired_width(f32::INFINITY),
         );
-        ui.add_space(2.0);
-
-        ui.label(
-            egui::RichText::new(self.i18n.t("settings.api_key"))
-                .size(12.0)
-                .color(subtitle_color),
-        );
+        ui.label(self.i18n.t("settings.ai_api_key"));
         ui.add(
-            super::design::text_edit(&mut self.translate_api_key)
+            super::design::text_edit(&mut self.ai_api_key)
                 .password(true)
                 .hint_text("sk-...")
                 .desired_width(f32::INFINITY),
         );
-        ui.add_space(8.0);
-
-        // Dictionary API
-        ui.label(
-            egui::RichText::new(self.i18n.t("settings.dictionary_section"))
-                .size(13.0)
-                .strong()
-                .color(heading_color),
+        ui.label(self.i18n.t("settings.ai_model"));
+        ui.add(
+            super::design::text_edit(&mut self.ai_model)
+                .hint_text("gpt-4o-mini")
+                .desired_width(f32::INFINITY),
         );
-        ui.add_space(2.0);
+    }
 
-        egui::ComboBox::from_id_salt("dictionary-api-provider")
-            .selected_text(self.i18n.t(if self.dictionary_api_provider == "json" {
-                "services.json"
-            } else {
-                "services.openai"
-            }))
-            .show_ui(ui, |ui| {
-                ui.selectable_value(
-                    &mut self.dictionary_api_provider,
-                    "openai".into(),
-                    self.i18n.t("services.openai"),
-                );
-                ui.selectable_value(
-                    &mut self.dictionary_api_provider,
-                    "json".into(),
-                    self.i18n.t("services.json"),
-                );
-            });
-        if self.dictionary_api_provider == "openai" {
-            ui.label(self.i18n.t("services.model"));
-            ui.add(
-                super::design::text_edit(&mut self.dictionary_api_model)
-                    .desired_width(f32::INFINITY),
-            );
-            ui.small(self.i18n.t("services.openai_hint"));
+    pub(crate) fn render_settings_shortcuts(&mut self, ui: &mut egui::Ui) {
+        if ui
+            .checkbox(&mut self.mouse_page_turn, "允许鼠标翻页（单击左右侧 / 边缘拖拽）")
+            .changed()
+        {
+            self.page_curl.clear();
         }
-        ui.label(
-            egui::RichText::new(self.i18n.t("settings.api_url"))
-                .size(12.0)
-                .color(subtitle_color),
-        );
-        ui.add(
-            super::design::text_edit(&mut self.dictionary_api_url)
-                .hint_text("https://api.example.com/v1")
-                .desired_width(f32::INFINITY),
-        );
-        ui.add_space(2.0);
-
-        ui.label(
-            egui::RichText::new(self.i18n.t("settings.api_key"))
-                .size(12.0)
-                .color(subtitle_color),
-        );
-        ui.add(
-            super::design::text_edit(&mut self.dictionary_api_key)
-                .password(true)
-                .hint_text("key-...")
-                .desired_width(f32::INFINITY),
-        );
+        ui.small("关闭后鼠标只用于选字，不会误触翻页。");
+        ui.add_space(6.);
+        ui.add_space(10.);
+        ui.label(egui::RichText::new("快捷键（留空表示禁用）").small());
+        let actions = [
+            ("annotations", "书签与笔记"),
+            ("highlight", "快速高亮"),
+            ("library", "返回书库"),
+            ("open", "打开文件"),
+            ("search", "搜索"),
+            ("toc", "目录"),
+            ("settings", "设置"),
+            ("notes_search", "笔记搜索"),
+            ("notes_page", "笔记页"),
+            ("bookmark", "添加书签"),
+            ("quick_open", "快速打开书籍"),
+            ("ai_panel", "问 AI"),
+        ];
+        for (name, label) in actions {
+            let spec = self.shortcuts.get(name).cloned().unwrap_or_default();
+            ui.horizontal(|ui| {
+                ui.label(label);
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let capturing = self.shortcut_capture.as_deref() == Some(name);
+                    let text = if capturing {
+                        "按组合键…".to_owned()
+                    } else if spec.is_empty() {
+                        "未绑定".to_owned()
+                    } else {
+                        spec
+                    };
+                    if ui
+                        .add_sized([130.0, 24.0], egui::Button::new(text))
+                        .on_hover_text("点击后按下新的组合键；Esc 取消")
+                        .clicked()
+                    {
+                        self.shortcut_capture = Some(name.to_string());
+                    }
+                });
+            });
+        }
+        ui.small("点击右侧按钮后直接按组合键即可，无需输入文字。");
+        let mut seen: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+        for (name, _) in actions {
+            if let Some(spec) = self.shortcuts.get(name) {
+                if !spec.is_empty() {
+                    *seen.entry(spec.clone()).or_insert(0) += 1;
+                }
+            }
+        }
+        if let Some((spec, _)) = seen.iter().find(|(_, count)| **count > 1) {
+            ui.colored_label(
+                egui::Color32::from_rgb(200, 60, 60),
+                format!("快捷键冲突：{} 绑定了多个动作", spec),
+            );
+        }
     }
 }
 
@@ -1021,7 +1056,6 @@ mod single_column_tests {
 
     #[test]
     fn single_column_switch_is_enabled_for_every_style_and_retains_reflow_anchor() {
-        keyring::set_default_credential_builder(keyring::mock::default_credential_builder());
         let dir = tempfile::tempdir().unwrap();
         let mut app = ReaderApp::from_data_dir(dir.path().to_string_lossy().into_owned());
         app.i18n = reader_core::i18n::I18n::with_system(reader_core::i18n::Language::En, "en");

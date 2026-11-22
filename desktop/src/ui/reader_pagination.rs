@@ -108,7 +108,6 @@ impl crate::app::ReaderApp {
             "ReaderFont"
         };
         let galley_count = BLOCK_GALLEYS.with(|g| g.borrow().len());
-        let correction_count = CSC_RECTS.with(|g| g.borrow().len());
         for index in 0..ch.blocks.len() {
             let mut child = ui.new_child(
                 egui::UiBuilder::new()
@@ -162,7 +161,6 @@ impl crate::app::ReaderApp {
             measures.push(((child.min_rect().height() - FRAME_MARGIN).max(0.), bands));
         }
         BLOCK_GALLEYS.with(|g| g.borrow_mut().truncate(galley_count));
-        CSC_RECTS.with(|g| g.borrow_mut().truncate(correction_count));
         // Measure synthetic chapter titles with the same font/width as painting.
         let title = if matches!(
             ch.blocks.first(),
@@ -333,7 +331,6 @@ mod tests {
                 .unwrap_or(0)
                 * 1024
         }
-        keyring::set_default_credential_builder(keyring::mock::default_credential_builder());
         let root = tempfile::tempdir().unwrap();
         let path = std::env::var("READER_LARGE_BOOK").unwrap();
         let mut app =
@@ -444,7 +441,6 @@ mod tests {
         let root = std::path::PathBuf::from(
             std::env::var("EPUB_CHINESE_CORPUS").expect("EPUB_CHINESE_CORPUS"),
         );
-        keyring::set_default_credential_builder(keyring::mock::default_credential_builder());
         let data = tempfile::tempdir().unwrap();
         let mut app =
             crate::app::ReaderApp::from_data_dir(data.path().to_string_lossy().into_owned());
@@ -587,7 +583,6 @@ mod tests {
 
     #[test]
     fn long_paragraphs_and_table_rows_cover_every_native_line_at_both_widths() {
-        keyring::set_default_credential_builder(keyring::mock::default_credential_builder());
         let dir = tempfile::tempdir().unwrap();
         let mut app =
             crate::app::ReaderApp::from_data_dir(dir.path().to_string_lossy().into_owned());
@@ -608,7 +603,6 @@ mod tests {
                     text: "普通段落 Mixed WWW iii 英文也要跨页，不能漏行。".repeat(8),
                     style: InlineStyle::Normal,
                     link_url: None,
-                    correction: None,
                 }],
                 anchor_id: None,
                 native_style: Default::default(),
@@ -620,7 +614,6 @@ mod tests {
                 text: source.clone(),
                 style: InlineStyle::Normal,
                 link_url: None,
-                correction: None,
             }],
             anchor_id: None,
             native_style: Default::default(),

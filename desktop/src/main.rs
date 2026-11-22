@@ -2,7 +2,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod app;
-pub(crate) use reader_core::github_sync;
 #[cfg(feature = "performance-checks")]
 mod native_corpus;
 #[cfg(feature = "performance-checks")]
@@ -165,6 +164,10 @@ fn startup_open_path_from_process_args() -> Option<PathBuf> {
 }
 
 fn main() -> eframe::Result {
+    std::panic::set_hook(Box::new(|info| {
+        let msg = format!("PANIC {}\n{}\n", info, std::backtrace::Backtrace::force_capture());
+        let _ = std::fs::write("panic.log", msg);
+    }));
     #[cfg(feature = "performance-checks")]
     let shelf_boot = (std::time::Instant::now(), reader_core::diagnostics::rss());
     #[cfg(feature = "performance-checks")]
@@ -191,10 +194,9 @@ fn main() -> eframe::Result {
         })
         || cfg!(debug_assertions) && std::env::args().any(|arg| arg == "--ui-preview")
     {
-        keyring::set_default_credential_builder(keyring::mock::default_credential_builder());
     }
     let debug_enabled = debug_enabled_from_args(std::env::args().skip(1));
-    reader_core::sharing::set_debug_logging_enabled(debug_enabled);
+    reader_core::diagnostics::set_debug_logging_enabled(debug_enabled);
     if debug_enabled {
         eprintln!("[APP-DBG] Debug console logging enabled via --debug");
     }
@@ -228,28 +230,6 @@ fn main() -> eframe::Result {
         Box::new(move |cc| {
             setup_fonts(&cc.egui_ctx);
             let mut app = ReaderApp::default();
-            #[cfg(debug_assertions)]
-            if std::env::args().any(|arg| arg == "--ui-preview") {
-                if let Ok(scene) = std::env::var("READER_RECEIVE_PREVIEW") {
-                    app.book_share = ui::book_share::ShareUI::receive_fixture(&scene);
-                    app.i18n
-                        .set_language(reader_core::i18n::Language::from_code("zh_cn"));
-                    app.dark_mode = std::env::var("READER_RECEIVE_DARK").as_deref() == Ok("1");
-                    app.appearance_linkage.set_app(app.dark_mode);
-                }
-            }
-
-            #[cfg(debug_assertions)]
-            if std::env::args().any(|a| a == "--ui-preview")
-                && std::env::args().any(|a| {
-                    matches!(
-                        a.as_str(),
-                        "--github-login-preview" | "--github-sync-preview"
-                    )
-                })
-            {
-                app.open_sync(0);
-            }
             #[cfg(debug_assertions)]
             if std::env::args().any(|a| a == "--appearance-linkage-preview") {
                 app.show_appearance_linkage = true;

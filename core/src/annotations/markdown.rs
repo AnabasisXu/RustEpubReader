@@ -144,7 +144,6 @@ mod tests {
                         text: source.into(),
                         style: crate::epub::InlineStyle::Normal,
                         link_url: None,
-                        correction: None,
                     }],
                 }],
             };
@@ -158,7 +157,7 @@ mod tests {
                     end_offset: range["end"].as_u64().unwrap() as usize,
                     color: Default::default(),
                     created_at: 1,
-                };
+                 text: String::new(), tags: Vec::new(),};
                 assert_eq!(
                     excerpt(&chapter, &highlight).unwrap(),
                     range["text"].as_str().unwrap()
@@ -187,7 +186,7 @@ mod tests {
             end_offset: 4,
             color: Default::default(),
             created_at: 1,
-        });
+         text: String::new(), tags: Vec::new(),});
         config.notes.push(Note {
             highlight_id: "h".into(),
             content: "![remote](https://example.invalid/pixel)\n<em>note</em>".into(),
@@ -207,7 +206,6 @@ mod tests {
                         text: "甲😀乙丙丁".into(),
                         style: crate::epub::InlineStyle::Normal,
                         link_url: None,
-                        correction: None,
                     }],
                     anchor_id: None,
                 }],

@@ -19,7 +19,6 @@ pub(crate) struct ReturnPoint {
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum NavigationKind {
     Local,
-    Remote,
     Return,
 }
 
@@ -41,11 +40,6 @@ pub(crate) struct ReaderNavigation {
 }
 
 impl ReaderNavigation {
-    pub(crate) fn pending_remote_from(&self, current: ReaderLocation) -> bool {
-        self.pending.as_ref().is_some_and(|(_, kind, origin, _)| {
-            *kind == NavigationKind::Remote && *origin == current
-        })
-    }
     fn remember(&mut self, point: ReturnPoint, target: ReaderLocation) {
         if point.location != target
             && self
@@ -194,9 +188,6 @@ impl ReaderApp {
         let Some((target, kind, origin, receiver)) = self.reader_navigation.pending.take() else {
             return;
         };
-        if kind == NavigationKind::Remote && self.reader_location() != origin {
-            return;
-        }
         match receiver.try_recv() {
             Err(std::sync::mpsc::TryRecvError::Empty) => {
                 self.reader_navigation.pending = Some((target, kind, origin, receiver));
@@ -259,7 +250,6 @@ impl ReaderApp {
             self.reader_navigation.begin_fade = false;
         }
         self.page_curl.clear();
-        self.tts_detach_view();
         self.text_selection = None;
         self.reader_navigation.restored_locator = Some(target);
         self.current_chapter = target.chapter;
@@ -269,20 +259,10 @@ impl ReaderApp {
         self.scroll_to_top = target.block == 0 && target.char_offset == 0;
         self.pages_dirty = true;
         self.current_page = 0;
-        if kind == NavigationKind::Remote {
-            self.last_synced_chapter = Some(target.chapter);
-            self.last_synced_block = Some(target.block);
-            self.last_synced_char_offset = Some(target.char_offset);
-        }
-        if kind == NavigationKind::Remote {
-            // The producer committed the revision before this animated UI notification.
-            self.position_save_due = None;
-        } else {
-            self.position_save_modified_ms = reader_core::now_millis();
-            self.position_save_due = Some(std::time::Instant::now());
-            if let Err(error) = self.flush_reading_position_for_backup() {
-                self.error_msg = Some(error);
-            }
+        self.position_save_modified_ms = reader_core::now_millis();
+        self.position_save_due = Some(std::time::Instant::now());
+        if let Err(error) = self.flush_reading_position() {
+            self.error_msg = Some(error);
         }
         let now = self
             .last_egui_ctx
@@ -368,7 +348,7 @@ impl ReaderApp {
             }
             1 if self.reader_location() == origin => {
                 self.reader_navigation.history.clear();
-                self.navigate_reader(target, NavigationKind::Remote);
+                self.navigate_reader(target, NavigationKind::Local);
                 step = 2;
                 deadline = now + 0.6;
             }

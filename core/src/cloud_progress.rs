@@ -1,10 +1,21 @@
 //! Latest actual reading edit wins. Applying a remote edit never creates a new edit.
-use crate::{
-    cloud_sync::{DeviceSnapshot, SyncJournal},
-    sharing::ProgressEntry,
-};
+use crate::cloud_sync::{DeviceSnapshot, SyncJournal};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct ProgressEntry {
+    pub book_hash: String,
+    pub title: String,
+    pub chapter: usize,
+    #[serde(default, skip_serializing_if = "crate::library::is_zero")]
+    pub block: usize,
+    #[serde(default, skip_serializing_if = "crate::library::is_zero")]
+    pub char_offset: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chapter_title: Option<String>,
+    pub timestamp: u64,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ProgressVersion {
     pub modified_ms: u64,

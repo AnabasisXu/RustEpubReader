@@ -65,8 +65,6 @@ struct ActivityStore {
     checkpoints: BTreeMap<String, u64>,
     #[serde(default)]
     migrated: std::collections::BTreeSet<String>,
-    #[serde(default)]
-    legacy_restored: std::collections::BTreeSet<String>,
 }
 impl Default for ActivityStore {
     fn default() -> Self {
@@ -75,7 +73,6 @@ impl Default for ActivityStore {
             books: Default::default(),
             checkpoints: Default::default(),
             migrated: Default::default(),
-            legacy_restored: Default::default(),
         }
     }
 }
@@ -111,114 +108,13 @@ impl ActivityStore {
         let bytes = serde_json::to_vec(self).map_err(|_| "Cannot encode reading activity")?;
         crate::storage::replace(&path, &bytes)
     }
-    fn migrate(&mut self, root: &str, device: &str) -> Result<(), String> {
+    fn migrate(&mut self, _root: &str, device: &str) -> Result<(), String> {
         if self.migrated.contains(device) {
             return Ok(());
-        }
-        for entry in Library::load_from(root)?.books {
-            let Some(config) = Library::read_book_config(root, &entry.id) else {
-                continue;
-            };
-            let Some(old) = config.reading_stats else {
-                continue;
-            };
-            let Some(hash) = config
-                .file_hash
-                .or_else(|| crate::epub::EpubBook::file_hash(&entry.path).ok())
-            else {
-                continue;
-            };
-            if self.legacy_restored.contains(&hash) {
-                continue;
-            }
-            let mut legacy = DeviceActivity {
-                title: bounded_title(&entry.title),
-                ..Default::default()
-            };
-            // The old timer included idle time and used UTC day keys. Keep its total
-            // distinct from the new activity trend; the original sessions stay in config.
-            legacy.undated = old.total_seconds;
-            // Separate legacy identity: repeating migration cannot add history twice.
-            self.books
-                .entry(hash)
-                .or_default()
-                .entry(format!("legacy_{device}"))
-                .or_default()
-                .merge(&legacy);
         }
         self.migrated.insert(device.into());
         Ok(())
     }
-}
-
-pub(crate) type PortableActivity = BTreeMap<String, BTreeMap<String, DeviceActivity>>;
-pub(crate) fn validate_portable(activity: &PortableActivity) -> Result<(), String> {
-    if activity.len() > 5000
-        || activity.iter().any(|(hash, sources)| {
-            !valid_hash(hash)
-                || sources.len() > 128
-                || sources.iter().any(|(source, value)| {
-                    !crate::cloud_sync::valid_device_id(
-                        source.strip_prefix("legacy_").unwrap_or(source),
-                    ) || !value.validate()
-                })
-        })
-    {
-        return Err("Invalid portable reading activity".into());
-    }
-    Ok(())
-}
-pub(crate) fn portable<'a>(
-    root: &str,
-    configs: impl IntoIterator<Item = &'a crate::library::BookConfig>,
-) -> Result<PortableActivity, String> {
-    let _access = crate::library::access::lock(root)?;
-    let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    if std::fs::metadata(Path::new(root).join("reading-activity.json"))
-        .is_ok_and(|m| m.len() > 64 * 1024 * 1024)
-    {
-        return Err("Reading activity exceeds backup metadata limit".into());
-    }
-    let mut activity = ActivityStore::load(root)?.books;
-    // Capture old per-book timers even if the statistics screen has never run.
-    for config in configs {
-        if let (Some(hash), Some(stats)) = (&config.file_hash, &config.reading_stats) {
-            let sources = activity.entry(hash.clone()).or_default();
-            if !sources.keys().any(|source| source.starts_with("legacy_")) {
-                sources.insert(
-                    format!("legacy_{hash}"),
-                    DeviceActivity {
-                        title: bounded_title(&config.title),
-                        undated: stats.total_seconds,
-                        days: Default::default(),
-                    },
-                );
-            }
-        }
-    }
-    validate_portable(&activity)?;
-    Ok(activity)
-}
-/// Prepare the exact transaction payload; no counter/heartbeat identity is imported.
-pub(crate) fn merged_portable(root: &str, incoming: &PortableActivity) -> Result<Vec<u8>, String> {
-    let _access = crate::library::access::lock(root)?;
-    let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    validate_portable(incoming)?;
-    let mut store = ActivityStore::load(root)?;
-    for (hash, sources) in incoming {
-        for (source, value) in sources {
-            store
-                .books
-                .entry(hash.clone())
-                .or_default()
-                .entry(source.clone())
-                .or_default()
-                .merge(value);
-        }
-        store.legacy_restored.insert(hash.clone());
-    }
-    validate_portable(&store.books)?;
-    serde_json::to_vec(&store).map_err(|_| "Cannot encode restored reading activity".into())
 }
 
 /// Idempotent heartbeat. `elapsed` is cumulative active seconds for a random session.
@@ -682,35 +578,6 @@ mod tests {
         );
     }
     #[test]
-    fn legacy_is_preserved_once_and_excluded_from_new_trend() {
-        let (dir, id) = setup();
-        let root = dir.path().to_str().unwrap();
-        let mut config = Library::read_book_config(root, &id).unwrap();
-        config.reading_stats = Some(crate::library::ReadingStats {
-            total_seconds: 3600,
-            sessions: vec![crate::library::ReadingSession {
-                date: "20740".into(),
-                seconds: 3600,
-            }],
-        });
-        config.save(root).unwrap();
-        export(root, "phone").unwrap();
-        export(root, "phone").unwrap();
-        let report = report(root, "phone", "2026-10-14", None).unwrap();
-        assert_eq!(report.total, 3600);
-        assert_eq!(report.undated, 3600);
-        assert_eq!(report.week, 0);
-        assert_eq!(
-            Library::read_book_config(root, &id)
-                .unwrap()
-                .reading_stats
-                .unwrap()
-                .sessions
-                .len(),
-            1
-        );
-    }
-    #[test]
     fn dates_validate_without_unicode_panics_and_offset_is_local() {
         assert_eq!(date_from_days(0), "1970-01-01");
         assert!(parse_day("2024-02-29").is_some());
@@ -734,62 +601,6 @@ mod tests {
         assert!(checkpoint(root, "phone", "../bad", "r", 20, midnight, 0, false).is_err());
     }
     #[test]
-    fn lan_roundtrip_preserves_sources_and_old_messages_remain_readable() {
-        let (dir, id) = setup();
-        let root = dir.path().to_str().unwrap();
-        let now = parse_day("2026-10-14").unwrap() as u64 * 86400 + 120;
-        checkpoint(root, "phone", &id, "read", 10, now, 0, false).unwrap();
-        let hash = export(root, "phone")
-            .unwrap()
-            .keys()
-            .next()
-            .unwrap()
-            .clone();
-        let mut remote = crate::cloud_sync::DeviceSnapshot::new("desktop".into());
-        remote.activity.insert(
-            hash,
-            DeviceActivity {
-                title: "Book".into(),
-                days: BTreeMap::from([(
-                    "2026-10-14".into(),
-                    DayActivity {
-                        reading: 20,
-                        listening: 0,
-                    },
-                )]),
-                undated: 0,
-            },
-        );
-        import(root, "phone", &[remote]).unwrap();
-        let message = crate::sharing::protocol::Message::SyncProgress {
-            versions: Default::default(),
-            entries: vec![],
-            activity: snapshots(root, "phone").unwrap(),
-        };
-        let wire = serde_json::to_vec(&message).unwrap();
-        let decoded: crate::sharing::protocol::Message = serde_json::from_slice(&wire).unwrap();
-        let other = tempfile::tempdir().unwrap();
-        let other_root = other.path().to_str().unwrap();
-        if let crate::sharing::protocol::Message::SyncProgress { activity, .. } = decoded {
-            import(other_root, "tablet", &activity).unwrap();
-            import(other_root, "tablet", &activity).unwrap();
-            let result = report(other_root, "tablet", "2026-10-14", None).unwrap();
-            assert_eq!(result.total, 30);
-            assert_eq!(result.devices, 2);
-        } else {
-            panic!("Wrong wire message");
-        }
-        let old: crate::sharing::protocol::Message =
-            serde_json::from_str(r#"{"type":"SyncProgress","entries":[]}"#).unwrap();
-        assert!(
-            matches!(old,crate::sharing::protocol::Message::SyncProgress{activity,..} if activity.is_empty())
-        );
-        assert_eq!(
-            export(root, "phone").unwrap().values().next().unwrap().days["2026-10-14"].reading,
-            10
-        );
-    }
-    #[test]
     fn invalid_remote_data_and_corrupt_local_files_do_not_replace_records() {
         let (dir, id) = setup();
         let root = dir.path().to_str().unwrap();
@@ -808,105 +619,5 @@ mod tests {
         std::fs::write(&path, b"broken original").unwrap();
         assert!(checkpoint(root, "phone", &id, "read", 20, now, 0, false).is_err());
         assert_eq!(std::fs::read(&path).unwrap(), b"broken original");
-    }
-    #[cfg(not(feature = "keychain"))]
-    #[test]
-    fn encrypted_lan_sync_exchanges_activity_in_both_directions() {
-        use crate::sharing::{
-            auto_sync_session, connect_to_peer, handle_client, start_server, PeerStore,
-        };
-        use std::sync::Arc;
-        let (server_dir, server_book) = setup();
-        let server_root = server_dir.path().to_str().unwrap();
-        let (client_dir, client_book) = setup();
-        let client_root = client_dir.path().to_str().unwrap();
-        let server = PeerStore::load(server_root);
-        let mut client = PeerStore::load(client_root);
-        let server_id = server.device_id.clone();
-        let client_id = client.device_id.clone();
-        let now = 1_700_000_120u64;
-        let date = date_from_days((now / 86400) as i64);
-        checkpoint(
-            server_root,
-            &server_id,
-            &server_book,
-            "server",
-            20,
-            now,
-            0,
-            false,
-        )
-        .unwrap();
-        checkpoint(
-            client_root,
-            &client_id,
-            &client_book,
-            "client",
-            10,
-            now,
-            0,
-            false,
-        )
-        .unwrap();
-        let shared = Arc::new(Mutex::new(server));
-        let (listener, address) = start_server(
-            "127.0.0.1:0",
-            server_root,
-            server_root,
-            "1234",
-            shared.clone(),
-        )
-        .unwrap();
-        let root = server_root.to_owned();
-        let books = server_dir.path().join("books");
-        let server_thread = std::thread::spawn(move || {
-            let (mut stream, _) = listener.accept().unwrap();
-            stream
-                .set_read_timeout(Some(std::time::Duration::from_secs(10)))
-                .unwrap();
-            handle_client(
-                &mut stream,
-                &root,
-                books.to_str().unwrap(),
-                "1234",
-                shared,
-                &[],
-            )
-        });
-        let (mut stream, key, mut send, mut receive) = connect_to_peer(
-            &address,
-            &mut client,
-            client_root,
-            Some(&server_id),
-            Some("1234"),
-        )
-        .unwrap();
-        auto_sync_session(
-            &mut stream,
-            &key,
-            &mut send,
-            &mut receive,
-            &mut client,
-            client_root,
-            client_dir.path().join("books").to_str().unwrap(),
-            &[],
-        )
-        .unwrap();
-        crate::sharing::crypto::write_encrypted_message(
-            &mut stream,
-            &crate::sharing::protocol::Message::Goodbye,
-            &key,
-            &mut send,
-        )
-        .unwrap();
-        server_thread.join().unwrap().unwrap();
-        assert_eq!(
-            report(client_root, &client_id, &date, None).unwrap().total,
-            30
-        );
-        assert_eq!(
-            report(server_root, &server_id, &date, None).unwrap().total,
-            30
-        );
     }
 }

@@ -315,7 +315,6 @@ fn collect_blocks(
                                             text: "\u{2502} ".to_string(),
                                             style: InlineStyle::Normal,
                                             link_url: None,
-                                            correction: None,
                                         },
                                     );
                                     blocks.push(ContentBlock::Paragraph {
@@ -337,7 +336,6 @@ fn collect_blocks(
                                         text,
                                         style: InlineStyle::Normal,
                                         link_url: None,
-                                        correction: None,
                                     }],
                                     anchor_id: None,
                                 });
@@ -460,7 +458,6 @@ fn collect_blocks(
                             text: s.to_string(),
                             style: InlineStyle::Normal,
                             link_url: None,
-                            correction: None,
                         }],
                         anchor_id: None,
                     });
@@ -486,7 +483,6 @@ fn collect_spans(
                         text: s,
                         style: inherited_style.clone(),
                         link_url: link_url.map(|u| u.to_string()),
-                        correction: None,
                     });
                 }
             }
@@ -498,7 +494,6 @@ fn collect_spans(
                             text: "\n".to_string(),
                             style: InlineStyle::Normal,
                             link_url: None,
-                            correction: None,
                         });
                         continue;
                     }
@@ -554,7 +549,6 @@ fn collect_list(parent: ElementRef, blocks: &mut Vec<ContentBlock>, ordered: boo
                         text: prefix,
                         style: InlineStyle::Normal,
                         link_url: None,
-                        correction: None,
                     }];
                     spans.extend(collect_spans(li_ref, InlineStyle::Normal, None));
                     if spans.len() > 1 {
@@ -585,7 +579,6 @@ fn collect_table(parent: ElementRef, blocks: &mut Vec<ContentBlock>) {
                                 text: " | ".to_string(),
                                 style: InlineStyle::Normal,
                                 link_url: None,
-                                correction: None,
                             });
                         }
                         let style = if tag == "th" {

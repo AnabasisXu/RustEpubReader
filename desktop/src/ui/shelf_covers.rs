@@ -186,7 +186,6 @@ mod tests {
             let _ = wait.lock().unwrap().recv();
             None
         });
-        keyring::set_default_credential_builder(keyring::mock::default_credential_builder());
         let dir = tempfile::tempdir().unwrap();
         let mut app = crate::app::ReaderApp::from_data_dir(dir.path().to_string_lossy().into());
         app.shelf_covers = covers;

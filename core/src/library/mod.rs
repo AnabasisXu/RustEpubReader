@@ -595,7 +595,7 @@ impl Library {
         modified_ms: u64,
     ) -> Result<bool, String> {
         let record = crate::cloud_progress::VersionedProgress {
-            progress: crate::sharing::ProgressEntry {
+            progress: crate::cloud_progress::ProgressEntry {
                 book_hash: String::new(),
                 title: String::new(),
                 chapter,
@@ -884,12 +884,6 @@ impl Library {
             .as_ref()
             .map(|c| c.notes.clone())
             .unwrap_or_default();
-        let corrections = existing
-            .as_ref()
-            .map(|c| c.corrections.clone())
-            .unwrap_or_default();
-        let reading_stats = existing.as_ref().and_then(|c| c.reading_stats.clone());
-
         let mut cfg = BookConfig {
             annotation_state: existing
                 .as_ref()
@@ -919,11 +913,6 @@ impl Library {
             bookmarks,
             highlights,
             notes,
-            corrections,
-            reading_stats,
-            last_contribute_prompt_count: existing
-                .as_ref()
-                .map_or(0, |c| c.last_contribute_prompt_count),
         };
 
         cfg.save(data_dir)
@@ -1236,9 +1225,8 @@ mod tests {
     #[test]
     fn typed_reading_versions_resolve_ties_and_legacy_future_clocks_without_reopen_promotion() {
         use crate::{
-            cloud_progress::{ProgressVersion, VersionedProgress},
+            cloud_progress::{ProgressEntry, ProgressVersion, VersionedProgress},
             cloud_sync::SyncJournal,
-            sharing::ProgressEntry,
         };
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().to_str().unwrap();

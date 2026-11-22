@@ -30,6 +30,71 @@ impl SystemFont {
     }
 }
 
+/// Metadata for every face in a font file (TTC collections included).
+pub(crate) struct FaceInfo {
+    pub index: u32,
+    pub family: String,
+    pub localized: Option<String>,
+    pub has_cjk: bool,
+}
+
+pub(crate) fn font_faces(path: &str) -> Vec<FaceInfo> {
+    let mut file = match std::fs::File::open(path) {
+        Ok(file) => file,
+        Err(_) => return Vec::new(),
+    };
+    let mut header = [0u8; 12];
+    if file.read_exact(&mut header).is_err() {
+        return Vec::new();
+    }
+    let count = if &header[..4] == b"ttcf" {
+        u32::from_be_bytes(header[8..12].try_into().unwrap_or([0; 4])).clamp(1, 64)
+    } else {
+        1
+    };
+    let mut faces = Vec::new();
+    for index in 0..count {
+        let Ok(bytes) = read_face(path, index, true) else {
+            continue;
+        };
+        let Ok(face) = ttf_parser::Face::parse(&bytes, 0) else {
+            continue;
+        };
+        let mut family = None;
+        let mut localized = None;
+        for name in face.names() {
+            let Some(text) = name.to_string() else {
+                continue;
+            };
+            if matches!(name.name_id, ttf_parser::name_id::FAMILY | ttf_parser::name_id::FULL_NAME)
+                && family.is_none()
+            {
+                family = Some(text.clone());
+            }
+            if localized.is_none()
+                && text
+                    .chars()
+                    .any(|c| ('\u{4E00}'..='\u{9FFF}').contains(&c))
+            {
+                localized = Some(text);
+            }
+        }
+        let family = family.unwrap_or_default();
+        if family.is_empty() {
+            continue;
+        }
+        let has_cjk = face.glyph_index('\u{4E2D}').is_some()
+            || face.glyph_index('\u{6F22}').is_some();
+        faces.push(FaceInfo {
+            index,
+            family,
+            localized,
+            has_cjk,
+        });
+    }
+    faces
+}
+
 pub(crate) fn load_path(path: &str) -> Option<Arc<FontData>> {
     SystemFont {
         path: path.into(),
@@ -71,7 +136,7 @@ fn read_face(path: &str, index: u32, metadata_only: bool) -> std::io::Result<Vec
     }
     records.retain(|r| {
         if metadata_only {
-            matches!(&r[..4], b"head" | b"hhea" | b"maxp" | b"name")
+            matches!(&r[..4], b"head" | b"hhea" | b"maxp" | b"name" | b"cmap")
         } else {
             !matches!(
                 &r[..4],
@@ -467,3 +532,4 @@ mod tests {
         );
     }
 }
+

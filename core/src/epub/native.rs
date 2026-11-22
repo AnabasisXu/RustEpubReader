@@ -1022,7 +1022,6 @@ mod binding_tests {
                 text: text.into(),
                 style: super::super::InlineStyle::Normal,
                 link_url: None,
-                correction: None,
             }],
             anchor_id: anchor.map(str::to_owned),
             native_style: Default::default(),

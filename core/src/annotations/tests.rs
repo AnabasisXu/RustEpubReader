@@ -315,7 +315,7 @@ fn stale_note_editor_keeps_new_remote_text_and_a_later_edit_resolves_versions() 
         end_offset: 3,
         color: Default::default(),
         created_at: 1,
-    });
+     text: String::new(), tags: Vec::new(),});
     config.save(root).unwrap();
     let first = save_note(root, &id, "h", "Original", Some(None)).unwrap();
     let remote_note = Annotation::Note(Note {
@@ -374,7 +374,7 @@ fn stale_editor_after_note_deletion_fails_without_resurrecting_the_note() {
         end_offset: 1,
         color: Default::default(),
         created_at: 1,
-    });
+     text: String::new(), tags: Vec::new(),});
     config.save(root).unwrap();
     save_note(root, &id, "h", "Original", Some(None)).unwrap();
     let deleted = save_note(root, &id, "h", "", Some(Some("Original"))).unwrap();
@@ -398,7 +398,7 @@ fn legacy_colliding_highlight_ids_upgrade_deterministically_without_dropping_con
         end_offset: 1,
         color: Default::default(),
         created_at: 1,
-    };
+     text: String::new(), tags: Vec::new(),};
     let mut second = first.clone();
     second.start_offset = 1;
     second.end_offset = 3;

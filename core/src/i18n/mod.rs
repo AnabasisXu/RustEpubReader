@@ -307,7 +307,7 @@ mod tests {
         let zh = I18n::with_system(Language::ZhCN, "en");
         assert_eq!(en.count("ui.library_count", 1), "1 book");
         assert_eq!(en.count("ui.library_count", 2), "2 books");
-        assert_eq!(en.message(zh.t("tts.playing")), en.t("tts.playing"));
+        assert_eq!(en.message(zh.t("settings.title")), en.t("settings.title"));
         assert_eq!(
             en.message(&zh.tf1("common.books_imported_count", "1")),
             "Books imported: 1"

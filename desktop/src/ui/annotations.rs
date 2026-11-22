@@ -5,8 +5,9 @@ use reader_core::library::HighlightColor;
 
 #[derive(Default)]
 pub(crate) struct PanelState {
+    pub(crate) query: String,
     book: Option<String>,
-    tab: Option<usize>,
+    pub(crate) tab: Option<usize>,
     details: Option<String>,
     previews: std::collections::HashMap<String, String>,
     order: std::collections::VecDeque<String>,
@@ -20,7 +21,6 @@ enum PanelAction {
     DeleteHighlight(String),
     DeleteBookmark(usize, usize),
     Details(String),
-    Revert(usize, usize, usize),
 }
 
 fn bounded_label(
@@ -158,7 +158,7 @@ pub(crate) enum AnnotationExportTask {
     Saving(std::sync::mpsc::Receiver<Result<(), String>>),
 }
 impl ReaderApp {
-    fn start_annotation_export(&mut self, ctx: &egui::Context) {
+    pub(crate) fn start_annotation_export(&mut self, ctx: &egui::Context) {
         if self.annotation_export.is_some() {
             return;
         }
@@ -325,7 +325,7 @@ impl ReaderApp {
                     if ui
                         .add_enabled(
                             self.editing_note_id.as_deref() != Some(id),
-                            egui::Button::new(self.i18n.t("library.delete")),
+                            egui::Button::new("删除笔记"),
                         )
                         .clicked()
                     {
@@ -341,7 +341,7 @@ impl ReaderApp {
                         ui.memory_mut(|memory| memory.close_popup());
                     }
                     ui.separator();
-                    if ui.button(self.i18n.t("library.delete")).clicked() {
+                    if ui.button("删除笔记").clicked() {
                         *action = Some(PanelAction::DeleteBookmark(chapter, block));
                         ui.memory_mut(|memory| memory.close_popup());
                     }
@@ -381,25 +381,13 @@ impl ReaderApp {
             .book_config
             .as_ref()
             .map(|c| {
-                [
-                    c.bookmarks.len(),
-                    c.highlights.len(),
-                    c.corrections
-                        .iter()
-                        .filter(|r| r.status == "accepted" || r.status == "rejected")
-                        .count(),
-                ]
+                [c.bookmarks.len(), c.highlights.len()]
             })
-            .unwrap_or([0; 3]);
-        let tab = self.annotations_panel.tab.unwrap_or(if counts[1] > 0 {
-            1
-        } else if counts[0] > 0 {
-            0
-        } else if counts[2] > 0 {
-            2
-        } else {
-            0
-        });
+            .unwrap_or([0; 2]);
+        let tab = self
+            .annotations_panel
+            .tab
+            .unwrap_or(usize::from(counts[1] == 0 && counts[0] > 0));
         let mut action = None;
         let collapse = self.i18n.t("common.collapse").to_owned();
         let width = (ctx.screen_rect().width() * 0.35).clamp(300., 360.);
@@ -436,11 +424,16 @@ impl ReaderApp {
                         }
                     });
                 });
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.annotations_panel.query)
+                        .desired_width(f32::INFINITY),
+                );
+                ui.add_space(4.);
                 ui.horizontal_wrapped(|ui| {
                     for (index, key) in [
                         "annotations.bookmarks",
                         "annotations.tab_highlights",
-                        "annotations.corrections",
+                        "标签",
                     ]
                     .iter()
                     .enumerate()
@@ -461,11 +454,18 @@ impl ReaderApp {
                 ui.add_space(4.);
                 let row_font = ui.text_style_height(&egui::TextStyle::Body);
                 let small = ui.text_style_height(&egui::TextStyle::Small);
+                let query=self.annotations_panel.query.trim().to_lowercase();
                 egui::ScrollArea::vertical().id_salt(("annotation_rows",tab)).auto_shrink([false,false]).show_viewport(ui,|ui,_viewport| {
                 match tab {
                     0 => {
                         let mut entries=self.book_config.as_ref().map(|c|c.bookmarks.clone()).unwrap_or_default();
                         entries.sort_by_key(|b|(b.chapter,b.block));
+                        if !query.is_empty() {
+                            entries.retain(|b| {
+                                let preview=self.annotation_preview(format!("b:{}:{}",b.chapter,b.block),b.chapter,b.block,b.block,0,240);
+                                preview.to_lowercase().contains(&query) || self.annotation_chapter(b.chapter).to_lowercase().contains(&query)
+                            });
+                        }
                         if entries.is_empty() {ui.label(self.i18n.t("annotations.no_bookmarks"));}
                         for bookmark in entries {
                             let height=ui.spacing().interact_size.y.max(26.)+small*2.+24.;
@@ -492,6 +492,25 @@ impl ReaderApp {
                         let mut entries=self.book_config.as_ref().map(|c|c.highlights.clone()).unwrap_or_default();
                         entries.sort_by_key(|h|(h.chapter,h.start_block,h.start_offset));
                         let notes:std::collections::HashMap<_,_>=self.book_config.as_ref().map(|c|c.notes.iter().enumerate().map(|(i,n)|(n.highlight_id.clone(),i)).collect()).unwrap_or_default();
+                        if !query.is_empty() {
+                            let note_map:std::collections::HashMap<String,String>=self.book_config.as_ref()
+                                .map(|c|c.notes.iter().map(|n|(n.highlight_id.clone(),n.content.to_lowercase())).collect())
+                                .unwrap_or_default();
+                            let mut kept=Vec::new();
+                            for h in entries {
+                                let key=format!("h:{}:{}:{}:{}:{}:{}",h.id,h.chapter,h.start_block,h.end_block,h.start_offset,h.end_offset);
+                                let preview=self.annotation_preview(key,h.chapter,h.start_block,h.end_block,h.start_offset,h.end_offset);
+                                let tag_text = h.tags.join(" ").to_lowercase();
+                                if preview.to_lowercase().contains(&query)
+                                    || note_map.get(&h.id).is_some_and(|n|n.contains(&query))
+                                    || tag_text.contains(&query)
+                                    || self.annotation_chapter(h.chapter).to_lowercase().contains(&query)
+                                {
+                                    kept.push(h);
+                                }
+                            }
+                            entries=kept;
+                        }
                         if entries.is_empty() {ui.label(self.i18n.t("annotations.no_highlights"));}
                         for highlight in entries {
                             let has_note=notes.contains_key(&highlight.id);
@@ -516,7 +535,13 @@ impl ReaderApp {
                                             if note_editor(ui,&mut self.editing_note_buf,&label).clicked() {action=Some(PanelAction::Save(highlight.id.clone()));}
                                             if ui.small_button(self.i18n.t("common.cancel")).clicked() {action=Some(PanelAction::CancelEdit);}
                                         } else if let Some(note)=&note {
-                                            if bounded_label(ui,note,1,false,true).on_hover_text(self.i18n.t("annotations.edit_note")).clicked() && self.editing_note_id.is_none() {action=Some(PanelAction::Edit(highlight.id.clone()));}
+                                            if ui.add(egui::Label::new(
+                                                    egui::RichText::new(note.as_str())
+                                                        .small()
+                                                        .color(egui::Color32::from_rgb(120, 180, 255)),
+                                                ).sense(egui::Sense::click()).truncate())
+                                                .on_hover_text(self.i18n.t("annotations.edit_note"))
+                                                .clicked() && self.editing_note_id.is_none() {action=Some(PanelAction::Edit(highlight.id.clone()));}
                                         }
                                         ui.horizontal(|ui| {
                                             let metadata_width=(ui.available_width()-36.).max(40.);
@@ -537,18 +562,25 @@ impl ReaderApp {
                         }
                     }
                     _ => {
-                        let entries=self.book_config.as_ref().map(|c|c.corrections.clone()).unwrap_or_default();
-                        let entries:Vec<_>=entries.into_iter().filter(|r|r.status=="accepted"||r.status=="rejected").collect();
-                        if entries.is_empty() {ui.label(self.i18n.t("annotations.no_corrections"));}
-                        for item in entries {
-                            ui.push_id((item.chapter,item.block_idx,item.char_offset),|ui| {
-                                let title=self.annotation_chapter(item.chapter);
-                                ui.add_space(6.);ui.small(title);
-                                ui.horizontal_wrapped(|ui| {
-                                    ui.label(egui::RichText::new(&item.original).strikethrough());ui.label("→");ui.label(&item.corrected);
-                                    if ui.small_button("↩").on_hover_text(self.i18n.t("annotations.revert_correction")).clicked() {action=Some(PanelAction::Revert(item.chapter,item.block_idx,item.char_offset));}
-                                });ui.add_space(6.);ui.separator();
-                            });
+                        let mut tags: Vec<(String, usize)> = Vec::new();
+                        if let Some(cfg) = &self.book_config {
+                            for h in &cfg.highlights {
+                                for t in &h.tags {
+                                    if let Some(e) = tags.iter_mut().find(|(n, _)| n == t) {
+                                        e.1 += 1;
+                                    } else {
+                                        tags.push((t.clone(), 1));
+                                    }
+                                }
+                            }
+                        }
+                        tags.sort_by(|a, b| a.0.cmp(&b.0));
+                        if tags.is_empty() { ui.label("暂无标签"); }
+                        for (tag, count) in tags {
+                            if ui.selectable_label(false, format!("#{tag} ({count})")).clicked() {
+                                self.annotations_panel.query = tag;
+                                self.annotations_panel.tab = Some(1);
+                            }
                         }
                     }
                 }
@@ -606,7 +638,6 @@ impl ReaderApp {
                 let Some(mut config) = self.book_config.clone() else {
                     return;
                 };
-                let mut reverted = None;
                 match other {
                     PanelAction::DeleteHighlight(id) => {
                         config.highlights.retain(|h| h.id != id);
@@ -615,29 +646,10 @@ impl ReaderApp {
                     PanelAction::DeleteBookmark(chapter, block) => config
                         .bookmarks
                         .retain(|b| b.chapter != chapter || b.block != block),
-                    PanelAction::Revert(chapter, block, offset) => {
-                        config.corrections.retain(|r| {
-                            !(r.chapter == chapter
-                                && r.block_idx == block
-                                && r.char_offset == offset)
-                        });
-                        reverted = Some((chapter, block, offset));
-                    }
                     _ => unreachable!(),
                 }
                 match config.save(&self.data_dir) {
-                    Ok(()) => {
-                        self.book_config = Some(config);
-                        if let Some((chapter, block, offset)) = reverted {
-                            if let Some(correction) = self
-                                .csc_cache
-                                .get_mut(&(chapter, block))
-                                .and_then(|rows| rows.iter_mut().find(|c| c.char_offset == offset))
-                            {
-                                correction.status = reader_core::epub::CorrectionStatus::Pending;
-                            }
-                        }
-                    }
+                    Ok(()) => self.book_config = Some(config),
                     Err(error) => self.error_msg = Some(error),
                 }
             }
@@ -775,7 +787,6 @@ mod editor_tests {
 
     #[test]
     fn failed_delete_preserves_the_visible_annotation_and_note() {
-        keyring::set_default_credential_builder(keyring::mock::default_credential_builder());
         let root = tempfile::tempdir().unwrap();
         let directory = root.path().to_str().unwrap();
         let mut library = reader_core::library::Library::load_from(directory).unwrap();
@@ -801,7 +812,8 @@ mod editor_tests {
             end_offset: 2,
             color: HighlightColor::Yellow,
             created_at: 1,
-        });
+                tags: Vec::new(),
+         text: String::new(),});
         config.notes.push(reader_core::library::Note {
             highlight_id: id.clone(),
             content: "Keep this draft".into(),
