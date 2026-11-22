@@ -213,6 +213,7 @@ impl ReaderApp {
                 preview: row.text.clone(),
                 focus: true,
                 tag_buf: String::new(),
+                tags: row.tags.clone(),
                 book_id: Some(row.book_id.clone()),
                 tag_focus: false,
             });

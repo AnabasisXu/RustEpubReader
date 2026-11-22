@@ -115,8 +115,9 @@ thread_local! {
 }
 
 thread_local! {
-    static HL_NOTES: std::cell::RefCell<std::collections::HashMap<(usize, usize), String>> =
-        std::cell::RefCell::new(std::collections::HashMap::new());
+    static HL_NOTES: std::cell::RefCell<
+        std::collections::HashMap<(usize, usize), Vec<(usize, usize, String)>>,
+    > = std::cell::RefCell::new(std::collections::HashMap::new());
 }
 
 pub(crate) fn set_vim_overlay(
@@ -171,7 +172,9 @@ fn paint_vim_overlay(ui: &egui::Ui, block: usize, rect: egui::Rect, galley: &egu
     }
 }
 
-pub(crate) fn set_highlight_notes(map: std::collections::HashMap<(usize, usize), String>) {
+pub(crate) fn set_highlight_notes(
+    map: std::collections::HashMap<(usize, usize), Vec<(usize, usize, String)>>,
+) {
     HL_NOTES.with(|m| *m.borrow_mut() = map);
 }
 
@@ -295,7 +298,6 @@ pub(crate) fn render_content_layout(
                             );
                         }
                         if !replaced_heading {
-                            let top_before = ui.cursor().min.y;
                             render_block(
                                 ui,
                                 block,
@@ -311,20 +313,44 @@ pub(crate) fn render_content_layout(
                                 hl_ranges,
                             );
                             if !hl_ranges.is_empty() {
-                                let bottom = ui.cursor().min.y;
-                                let area = egui::Rect::from_min_max(
-                                    egui::pos2(ui.max_rect().left(), top_before),
-                                    egui::pos2(ui.max_rect().right(), bottom),
-                                );
-                                if ui.rect_contains_pointer(area) {
-                                    if let Some(note) = HL_NOTES.with(|m| {
-                                        m.borrow().get(&(current_chapter, abs_idx)).cloned()
-                                    }) {
-                                        if !note.trim().is_empty() {
+                                if let Some(hover) = ui.ctx().pointer_hover_pos() {
+                                    let cursor_index = BLOCK_GALLEYS.with(|galleys| {
+                                        galleys.borrow().iter().rev().find_map(|entry| {
+                                            (entry.key.chapter == current_chapter
+                                                && entry.key.block == abs_idx
+                                                && entry.rect.intersect(entry.clip).contains(hover))
+                                            .then(|| {
+                                                entry
+                                                    .galley
+                                                    .cursor_from_pos(hover - entry.rect.min)
+                                                    .ccursor
+                                                    .index
+                                            })
+                                        })
+                                    });
+                                    if let Some(index) = cursor_index {
+                                        let note = HL_NOTES.with(|m| {
+                                            m.borrow()
+                                                .get(&(current_chapter, abs_idx))
+                                                .and_then(|ranges| {
+                                                    ranges
+                                                        .iter()
+                                                        .find(|(start, end, _)| {
+                                                            index >= *start && index < *end
+                                                        })
+                                                        .map(|(start, _, note)| (*start, note.clone()))
+                                                })
+                                        });
+                                        if let Some((start, note)) = note {
                                             egui::show_tooltip_at_pointer(
                                                 ui.ctx(),
                                                 ui.layer_id(),
-                                                egui::Id::new(("hl_note", current_chapter, abs_idx)),
+                                                egui::Id::new((
+                                                    "hl_note",
+                                                    current_chapter,
+                                                    abs_idx,
+                                                    start,
+                                                )),
                                                 |ui| {
                                                     ui.label(note);
                                                 },

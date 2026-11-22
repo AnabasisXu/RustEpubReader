@@ -439,13 +439,18 @@ impl ReaderApp {
             }
 
             {
-                let mut notes_map: std::collections::HashMap<(usize, usize), String> =
-                    std::collections::HashMap::new();
+                let mut notes_map: std::collections::HashMap<
+                    (usize, usize),
+                    Vec<(usize, usize, String)>,
+                > = std::collections::HashMap::new();
                 if let Some(cfg) = &self.book_config {
                     for h in &cfg.highlights {
                         if let Some(n) = cfg.notes.iter().find(|n| n.highlight_id == h.id) {
                             if !n.content.trim().is_empty() {
-                                notes_map.insert((h.chapter, h.start_block), n.content.clone());
+                                notes_map
+                                    .entry((h.chapter, h.start_block))
+                                    .or_default()
+                                    .push((h.start_offset, h.end_offset, n.content.clone()));
                             }
                         }
                     }
@@ -1217,7 +1222,7 @@ impl ReaderApp {
                 }
                 if !curl_consumed_frame
                     && self.text_selection.is_none()
-                    && self.clicked_highlight_id.is_none()
+                    && self.note_popup.is_none()
                     && !self.show_review_panel
                 {
                     let hover_pos = ui.input(|i| i.pointer.hover_pos());
@@ -1475,6 +1480,17 @@ impl ReaderApp {
             Some((entry.key.block, cursor.ccursor.index))
         };
 
+        // Only start/continue selection inside the page's text area. A drag on a
+        // side-panel scrollbar or another view must never select page text.
+        let reader_bounds = block_galleys
+            .iter()
+            .filter(|entry| entry.key.chapter == self.current_chapter)
+            .fold(egui::Rect::NOTHING, |rect, entry| {
+                rect.union(entry.rect.intersect(entry.clip))
+            });
+        let pointer_in_reader = !block_galleys.is_empty()
+            && pointer_pos.is_some_and(|pos| reader_bounds.expand(24.0).contains(pos));
+
         // Check if pointer is over a toolbar area (so we don't start selection there)
         let toolbar_id = egui::Id::new("sel_toolbar");
         let note_toolbar_id = egui::Id::new("hl_note_toolbar");
@@ -1489,7 +1505,7 @@ impl ReaderApp {
 
         if let Some(pos) = pointer_pos {
             const DRAG_THRESHOLD: f32 = 5.0;
-            if primary_pressed && !over_toolbar {
+            if primary_pressed && !over_toolbar && pointer_in_reader {
                 let origin = press_pos.unwrap_or(pos);
                 if let Some((block_idx, char_idx)) = hit_test(origin).or_else(|| nearest_hit(origin)) {
                     // Record press origin; don't create TextSelection yet
@@ -1498,19 +1514,22 @@ impl ReaderApp {
                     if self.text_selection.as_ref().is_some_and(|s| !s.is_dragging) {
                         self.text_selection = None;
                     }
-                    if self.clicked_highlight_id.is_some() {
-                        self.clicked_highlight_id = None;
+                    if self.note_popup.is_some() {
+                        self.note_popup = None;
                     }
                 } else {
                     // Clicked outside any block 鈫?clear everything
                     self.sel_press_origin = None;
                     self.text_selection = None;
-                    self.clicked_highlight_id = None;
+                    self.note_popup = None;
                 }
             }
             // Press, motion and release can arrive in one rendered frame.
             // Retain the event's press origin and finalize that drag as well.
-            if (primary_down || primary_released) && !over_toolbar {
+            if (primary_down || primary_released)
+                && !over_toolbar
+                && (pointer_in_reader || self.text_selection.is_some())
+            {
                 // If we have a pending press origin but no selection yet, check threshold
                 if let Some((origin, block_idx, char_idx)) = self.sel_press_origin {
                     if (pos - origin).length() >= DRAG_THRESHOLD {
@@ -1569,36 +1588,33 @@ impl ReaderApp {
                 let mut handled_as_highlight = false;
                 if let Some((press_pos, press_block, press_char)) = self.sel_press_origin.take() {
                     // Look up if this block+char sits inside a highlight
-                    if let Some(cfg) = &self.book_config {
-                        if let Some(hl) = cfg.highlights.iter().find(|h| {
+                    let hit = self.book_config.as_ref().and_then(|cfg| {
+                        let hl = cfg.highlights.iter().find(|h| {
                             h.chapter == self.current_chapter
                                 && h.start_block == press_block
                                 && press_char >= h.start_offset
                                 && press_char < h.end_offset
-                        }) {
-                            // Found a highlight under the click 鈫?show note popup
-                            handled_as_highlight = true;
-                            self.clicked_highlight_id = Some(hl.id.clone());
-                            self.hl_note_just_opened = true;
-                            // Load existing note content into edit buffer
-                            if let Some(note) = cfg.notes.iter().find(|n| n.highlight_id == hl.id) {
-                                self.editing_note_buf = note.content.clone();
-                                self.editing_note_original = Some(note.content.clone());
-                            } else {
-                                self.editing_note_buf.clear();
-                                self.editing_note_original = None;
-                            }
-                            // Position popup above the click point
-                            if let Some(entry) = block_galleys.iter().find(|entry| {
-                                entry.key.chapter == self.current_chapter
-                                    && entry.key.block == press_block
-                            }) {
-                                self.hl_note_toolbar_pos =
-                                    egui::pos2(entry.rect.center().x, entry.rect.min.y);
-                            }
-                            // Clear any text selection
-                            self.text_selection = None;
-                        }
+                        })?;
+                        let note = cfg
+                            .notes
+                            .iter()
+                            .find(|n| n.highlight_id == hl.id)
+                            .map(|n| n.content.clone());
+                        Some((hl.id.clone(), hl.text.clone(), hl.tags.clone(), note))
+                    });
+                    if let Some((id, text, tags, note)) = hit {
+                        handled_as_highlight = true;
+                        self.note_popup = Some(crate::ui::note_popup::NotePopup {
+                            highlight_id: id,
+                            buffer: note.unwrap_or_default(),
+                            preview: text.chars().take(160).collect(),
+                            focus: true,
+                            tag_buf: String::new(),
+                            tags,
+                            book_id: None,
+                            tag_focus: false,
+                        });
+                        self.text_selection = None;
                     }
                     // Plain click on text (no highlight, no drag) 鈫?page turn
                     if !had_clicked_link
@@ -1816,8 +1832,9 @@ impl ReaderApp {
                                 focus: true,
                                 preview: preview_text.chars().take(160).collect(),
                                 tag_buf: String::new(),
-                    book_id: None,
-                    tag_focus: false,
+                                tags: Vec::new(),
+                                book_id: None,
+                                tag_focus: false,
                             });
                             self.last_highlight_undo = Some(id);
                         }
@@ -1841,115 +1858,7 @@ impl ReaderApp {
             }
         }
 
-        // 鈹€鈹€ Floating note popup for clicked highlight 鈹€鈹€
-        if let Some(hl_id) = self.clicked_highlight_id.clone() {
-            let popup_pos = self.hl_note_toolbar_pos;
 
-            let note_toolbar_id = egui::Id::new("hl_note_toolbar");
-            let mut close_popup = false;
-
-            egui::Area::new(note_toolbar_id)
-                .fixed_pos(egui::pos2(popup_pos.x - 160.0, popup_pos.y - 170.0))
-                .order(egui::Order::Foreground)
-                .interactable(true)
-                .show(ui.ctx(), |ui| {
-                    egui::Frame::popup(ui.style()).show(ui, |ui| {
-                        ui.set_max_width(320.0);
-
-                        // Top row: highlight info + action buttons
-                        ui.horizontal(|ui| {
-                            ui.label(
-                                egui::RichText::new(self.i18n.t("context.note"))
-                                    .strong()
-                                    .size(13.0),
-                            );
-                            ui.with_layout(
-                                egui::Layout::right_to_left(egui::Align::Center),
-                                |ui| {
-                                    // Delete highlight button
-                                    if ui
-                                        .small_button("删除")
-                                        .on_hover_text(self.i18n.t("context.delete_highlight"))
-                                        .clicked()
-                                    {
-                                        if let Some(cfg) = &mut self.book_config {
-                                            cfg.notes.retain(|n| n.highlight_id != hl_id);
-                                            cfg.highlights.retain(|h| h.id != hl_id);
-                                            if let Err(error) = cfg.save(&self.data_dir) {
-                                                self.error_msg = Some(error.to_string());
-                                            };
-                                        }
-                                        close_popup = true;
-                                    }
-                                    // Close button
-                                    if ui.small_button("x").clicked() {
-                                        close_popup = true;
-                                    }
-                                },
-                            );
-                        });
-
-                        ui.separator();
-
-                        // Note text edit area
-                        let response = ui.add(
-                            egui::TextEdit::multiline(&mut self.editing_note_buf)
-                                .margin(super::design::Geometry::CARD_INSET)
-                                .desired_rows(3)
-                                .desired_width(300.0)
-                        );
-
-                        // Save button
-                        ui.horizontal(|ui| {
-                            if ui.button(self.i18n.t("context.save_note")).clicked()
-                                || (response.lost_focus()
-                                    && ui.input(|i| {
-                                        i.key_pressed(egui::Key::Enter) && i.modifiers.ctrl
-                                    }))
-                            {
-                                if let Some(id) = self.book_config.as_ref().map(|c| c.id.clone()) {
-                                    match reader_core::annotations::save_note(
-                                        &self.data_dir,
-                                        &id,
-                                        &hl_id,
-                                        &self.editing_note_buf,
-                                        Some(self.editing_note_original.as_deref()),
-                                    ) {
-                                        Ok(config) => {
-                                            self.book_config = Some(config);
-                                            close_popup = true;
-                                        }
-                                        Err(error) => self.error_msg = Some(error),
-                                    }
-                                }
-                            }
-                        });
-                    });
-                });
-
-            // Close popup on click outside (skip the frame it was just opened)
-            if !close_popup && !self.show_review_panel {
-                if self.hl_note_just_opened {
-                    self.hl_note_just_opened = false;
-                } else {
-                    let any_click = ui.ctx().input(|i| i.pointer.primary_clicked());
-                    if any_click {
-                        let over_note_popup = ui.ctx().memory(|mem| {
-                            mem.layer_id_at(pointer_pos.unwrap_or_default())
-                                .is_some_and(|layer| layer.id == note_toolbar_id)
-                        });
-                        if !over_note_popup {
-                            close_popup = true;
-                        }
-                    }
-                }
-            }
-
-            if close_popup {
-                self.clicked_highlight_id = None;
-                self.editing_note_buf.clear();
-            }
-        }
 
 
     }

@@ -365,7 +365,7 @@ impl ReaderApp {
         }
         let blocked = self.show_review_panel
             || self.text_selection.is_some()
-            || self.clicked_highlight_id.is_some();
+            || self.note_popup.is_some();
         let escape = ui.input(|i| i.key_pressed(egui::Key::Escape) || !i.focused);
         if blocked {
             self.page_curl.clear();

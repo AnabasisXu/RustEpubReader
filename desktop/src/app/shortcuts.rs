@@ -61,23 +61,6 @@ impl ReaderApp {
             }
         }
 
-        // Del：删除当前选中的高亮（点击高亮后）
-        if self.view == AppView::Reader
-            && self.clicked_highlight_id.is_some()
-            && ctx.input(|i| i.key_pressed(egui::Key::Delete))
-        {
-            if let Some(id) = self.clicked_highlight_id.take() {
-                if let Some(mut cfg) = self.book_config.clone() {
-                    cfg.highlights.retain(|h| h.id != id);
-                    cfg.notes.retain(|n| n.highlight_id != id);
-                    if cfg.save(&self.data_dir).is_ok() {
-                        self.book_config = Some(cfg);
-                    }
-                }
-            }
-            return;
-        }
-
         // 笔记弹窗：Esc 取消 / Ctrl+Enter 保存（不依赖 TextEdit 是否吞键）
         if self.note_popup.is_some() {
             if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
@@ -177,8 +160,43 @@ impl ReaderApp {
             }
             return;
         }
-        // AI 面板必须能关闭：输入框持有键盘焦点时也要响应 Alt+L / Esc。
-        if !blocked && self.note_popup.is_none() {
+        // Ctrl+K 后 Ctrl+S（顺序也可颠倒）直接打开快捷键设置。
+        if !blocked {
+            let ctrl = ctx.input(|i| i.modifiers.ctrl || i.modifiers.command);
+            if ctrl {
+                let now = std::time::Instant::now();
+                let pressed = |key| ctx.input(|i| i.key_pressed(key));
+                let mut open = false;
+                if pressed(egui::Key::K) {
+                    open = self
+                        .shortcut_chord
+                        .take()
+                        .is_some_and(|(first, at)| {
+                            first == 's' && at.elapsed() < std::time::Duration::from_secs(2)
+                        });
+                    if !open {
+                        self.shortcut_chord = Some(('k', now));
+                    }
+                } else if pressed(egui::Key::S) {
+                    open = self
+                        .shortcut_chord
+                        .take()
+                        .is_some_and(|(first, at)| {
+                            first == 'k' && at.elapsed() < std::time::Duration::from_secs(2)
+                        });
+                    if !open {
+                        self.shortcut_chord = Some(('s', now));
+                    }
+                }
+                if open {
+                    self.shortcut_chord = None;
+                    self.show_settings = true;
+                    self.settings_tab = crate::app::SettingsTab::Shortcuts;
+                    self.show_annotations = false;
+                    self.show_search = false;
+                    return;
+                }
+            }
         }
         if blocked || ctx.wants_keyboard_input() || ctx.memory(|m| m.any_popup_open()) {
             return;
@@ -426,6 +444,7 @@ impl ReaderApp {
                     focus: true,
                     preview: preview.chars().take(160).collect(),
                     tag_buf: String::new(),
+                    tags: Vec::new(),
                     book_id: None,
                     tag_focus: false,
                 });
@@ -516,6 +535,7 @@ impl ReaderApp {
                     focus: true,
                     preview: text.chars().take(160).collect(),
                     tag_buf: String::new(),
+                    tags: Vec::new(),
                     book_id: None,
                     tag_focus: false,
                 });
@@ -726,6 +746,7 @@ mod tests {
             preview: "p".into(),
             focus: true,
             tag_buf: String::new(),
+            tags: Vec::new(),
             book_id: None,
             tag_focus: false,
         });

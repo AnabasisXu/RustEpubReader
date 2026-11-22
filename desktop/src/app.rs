@@ -355,6 +355,13 @@ pub enum AppView {
     Reader,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SettingsTab {
+    #[default]
+    Appearance,
+    Shortcuts,
+}
+
 /// Custom text selection state (replaces egui's native selectable label).
 #[derive(Clone, Debug)]
 pub struct TextSelection {
@@ -451,6 +458,10 @@ pub struct ReaderApp {
     pub reader_bg_image_alpha: f32,
     pub reader_bg_texture: Option<egui::TextureHandle>,
     pub show_settings: bool,
+    pub settings_tab: SettingsTab,
+    pub editing_note_buf: String,
+    pub editing_note_original: Option<String>,
+    pub(crate) shortcut_chord: Option<(char, std::time::Instant)>,
     pub(crate) reader_introduction_seen: bool,
     pub(crate) show_reader_introduction: bool,
     pub confirm_display_reset: bool,
@@ -579,13 +590,8 @@ pub struct ReaderApp {
     /// TextSelection only when pointer moves > threshold. Cleared on release if no drag occurred.
     pub sel_press_origin: Option<(egui::Pos2, usize, usize)>,
     /// When set, the user clicked on a highlighted region → show note popup for this highlight.
-    pub clicked_highlight_id: Option<String>,
-    pub hl_note_toolbar_pos: egui::Pos2,
-    pub hl_note_just_opened: bool,
     /// Note editing in annotations panel: highlight id being edited
     pub editing_note_id: Option<String>,
-    pub editing_note_buf: String,
-    pub editing_note_original: Option<String>,
     pub last_egui_ctx: Option<egui::Context>,
     // ── Review Panel (段评覆盖层) ──
     pub show_review_panel: bool,
@@ -777,6 +783,10 @@ impl ReaderApp {
             reader_bg_image_alpha: 0.22,
             reader_bg_texture: None,
             show_settings: false,
+            settings_tab: SettingsTab::Appearance,
+            editing_note_buf: String::new(),
+            editing_note_original: None,
+            shortcut_chord: None,
             reader_introduction_seen: false,
             show_reader_introduction: false,
             confirm_display_reset: false,
@@ -893,12 +903,7 @@ impl ReaderApp {
             text_selection: None,
             sel_toolbar_pos: egui::Pos2::ZERO,
             sel_press_origin: None,
-            clicked_highlight_id: None,
-            hl_note_toolbar_pos: egui::Pos2::ZERO,
-            hl_note_just_opened: false,
             editing_note_id: None,
-            editing_note_buf: String::new(),
-            editing_note_original: None,
             last_egui_ctx: None,
             // Review Panel
             show_review_panel: false,

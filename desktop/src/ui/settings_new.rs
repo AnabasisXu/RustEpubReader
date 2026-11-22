@@ -20,56 +20,75 @@ impl ReaderApp {
                 ui.spacing_mut().interact_size.y = 34.;
                 ui.spacing_mut().button_padding = egui::vec2(10., 6.);
                 super::design::sidebar_title(ui, self.i18n.t("settings.appearance_title"));
-                ui.add_space(12.);
+                ui.add_space(8.);
+                ui.horizontal(|ui| {
+                    if ui
+                        .selectable_label(
+                            self.settings_tab == crate::app::SettingsTab::Appearance,
+                            "外观与排版",
+                        )
+                        .clicked()
+                    {
+                        self.settings_tab = crate::app::SettingsTab::Appearance;
+                    }
+                    if ui
+                        .selectable_label(
+                            self.settings_tab == crate::app::SettingsTab::Shortcuts,
+                            "快捷键",
+                        )
+                        .clicked()
+                    {
+                        self.settings_tab = crate::app::SettingsTab::Shortcuts;
+                    }
+                });
+                ui.separator();
                 egui::ScrollArea::vertical()
-                    .id_salt("appearance_scroll")
+                    .id_salt(match self.settings_tab {
+                        crate::app::SettingsTab::Appearance => "appearance_scroll",
+                        crate::app::SettingsTab::Shortcuts => "shortcut_scroll",
+                    })
                     .auto_shrink([false, false])
-                    .show(ui, |ui| {
-                        settings_group(
-                            ui,
-                            self.i18n.t("appearance.link_title").to_owned(),
-                            palette,
-                            |ui| self.render_appearance_chain(ui),
-                        );
-                        settings_group(
-                            ui,
-                            self.i18n.t("appearance.styles").to_owned(),
-                            palette,
-                            |ui| self.render_settings_visual(ui, palette.text),
-                        );
-                        settings_group(
-                            ui,
-                            self.i18n.t("settings.page_turn_method").to_owned(),
-                            palette,
-                            |ui| self.render_settings_modes(ui),
-                        );
-                        settings_group(ui, "快捷键与鼠标".to_owned(), palette, |ui| {
-                            self.render_settings_shortcuts(ui)
-                        });
-                        settings_group(
-                            ui,
-                            self.i18n.t("settings.font_group").to_owned(),
-                            palette,
-                            |ui| self.render_settings_fonts(ui),
-                        );
-                        settings_group(
-                            ui,
-                            self.i18n.t("settings.layout_style").to_owned(),
-                            palette,
-                            |ui| self.render_settings_presentation(ui),
-                        );
-                        settings_group(
-                            ui,
-                            self.i18n.t("settings.layout_group").to_owned(),
-                            palette,
-                            |ui| self.render_settings_layout(ui),
-                        );
-                        egui::CollapsingHeader::new(self.i18n.t("settings.more"))
-                            .id_salt("appearance_more")
-                            .show(ui, |ui| {
+                    .show(ui, |ui| match self.settings_tab {
+                        crate::app::SettingsTab::Appearance => {
+                            settings_group(
+                                ui,
+                                self.i18n.t("appearance.link_title").to_owned(),
+                                palette,
+                                |ui| self.render_appearance_chain(ui),
+                            );
+                            settings_group(
+                                ui,
+                                self.i18n.t("appearance.styles").to_owned(),
+                                palette,
+                                |ui| self.render_settings_visual(ui, palette.text),
+                            );
+                            settings_group(
+                                ui,
+                                self.i18n.t("settings.page_turn_method").to_owned(),
+                                palette,
+                                |ui| self.render_settings_modes(ui),
+                            );
+                            settings_group(
+                                ui,
+                                self.i18n.t("settings.font_group").to_owned(),
+                                palette,
+                                |ui| self.render_settings_fonts(ui),
+                            );
+                            settings_group(
+                                ui,
+                                self.i18n.t("settings.layout_style").to_owned(),
+                                palette,
+                                |ui| self.render_settings_presentation(ui),
+                            );
+                            settings_group(
+                                ui,
+                                self.i18n.t("settings.layout_group").to_owned(),
+                                palette,
+                                |ui| self.render_settings_layout(ui),
+                            );
+                            settings_group(ui, "语言与显示".to_owned(), palette, |ui| {
                                 self.render_settings_language(ui, palette.text);
-                                ui.add_space(12.);
-                                ui.add_space(12.);
+                                ui.add_space(10.);
                                 if ui
                                     .checkbox(
                                         &mut self.scripts_enabled,
@@ -84,7 +103,7 @@ impl ReaderApp {
                                     self.page_curl.clear();
                                 }
                                 ui.small(self.i18n.t("settings.book_scripts_desc"));
-                                ui.add_space(12.);
+                                ui.add_space(10.);
                                 if ui
                                     .add_sized(
                                         [ui.available_width(), 36.],
@@ -96,6 +115,14 @@ impl ReaderApp {
                                 }
                                 ui.small(self.i18n.t("settings.reset_display_scope"));
                             });
+                        }
+                        crate::app::SettingsTab::Shortcuts => {
+                            ui.label("Ctrl+K 然后 Ctrl+S 可随时回到这里");
+                            ui.add_space(8.);
+                            settings_group(ui, "快捷键与鼠标".to_owned(), palette, |ui| {
+                                self.render_settings_shortcuts(ui)
+                            });
+                        }
                     });
             },
         ) {
