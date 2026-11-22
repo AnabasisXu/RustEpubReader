@@ -779,7 +779,6 @@ fn render_block_content(
                     rect,
                     clip: ui.clip_rect(),
                     text,
-                    response: response.clone(),
                 },
             );
 
@@ -875,7 +874,6 @@ fn render_block_content(
                     rect,
                     clip: ui.clip_rect(),
                     text: text.clone(),
-                    response: response.clone(),
                 },
             );
 

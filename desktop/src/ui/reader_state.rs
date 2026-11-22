@@ -205,7 +205,6 @@ pub(crate) struct BlockGalleyEntry {
     pub(crate) rect: egui::Rect,
     pub(crate) clip: egui::Rect,
     pub(crate) text: String,
-    pub(crate) response: egui::Response,
 }
 
 thread_local! {

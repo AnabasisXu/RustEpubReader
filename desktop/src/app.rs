@@ -18,7 +18,6 @@ pub(crate) fn default_shortcuts() -> std::collections::BTreeMap<String, String> 
         ("vim_mode", "Alt+V"),
         ("undo_highlight", "Ctrl+Z"),
         ("export_notes", "Alt+E"),
-        ("ai_panel", "Alt+L"),
         ("font_smaller", "Ctrl+-"),
         ("font_larger", "Ctrl+="),
     ] {
@@ -553,15 +552,6 @@ pub struct ReaderApp {
     pub search_selected: Option<usize>,
     // ── Annotations ──
     pub show_annotations: bool,
-    // ── AI assistant ──
-    pub show_ai_panel: bool,
-    pub ai_messages: Vec<crate::ui::ai::AiMessage>,
-    pub ai_input: String,
-    pub ai_status: String,
-    pub ai_streaming: bool,
-    pub ai_rx: Option<std::sync::mpsc::Receiver<crate::ui::ai::AiEvent>>,
-    pub ai_stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
-    pub ai_scroll_to_end: bool,
     pub(crate) annotations_panel: crate::ui::annotations::PanelState,
     pub(crate) annotation_export: Option<crate::ui::annotations::AnnotationExportTask>,
     pub book_config: Option<reader_core::library::BookConfig>,
@@ -569,10 +559,6 @@ pub struct ReaderApp {
     #[allow(dead_code)]
     pub auto_scroll: bool,
     pub auto_scroll_speed: f32,
-    // ── AI settings ──
-    pub ai_base_url: String,
-    pub ai_api_key: String,
-    pub ai_model: String,
     // ── Custom text selection ──
     pub text_selection: Option<TextSelection>,
     pub sel_toolbar_pos: egui::Pos2,
@@ -885,23 +871,12 @@ impl ReaderApp {
             search_selected: None,
             // Annotations
             show_annotations: false,
-            show_ai_panel: false,
-            ai_messages: Vec::new(),
-            ai_input: String::new(),
-            ai_status: String::new(),
-            ai_streaming: false,
-            ai_rx: None,
-            ai_stop: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            ai_scroll_to_end: false,
             annotations_panel: Default::default(),
             annotation_export: None,
             book_config: None,
             // Auto-scroll
             auto_scroll: false,
             auto_scroll_speed: 30.0,
-            ai_base_url: "https://api.openai.com/v1".into(),
-            ai_api_key: String::new(),
-            ai_model: "gpt-4o-mini".into(),
             text_selection: None,
             sel_toolbar_pos: egui::Pos2::ZERO,
             sel_press_origin: None,
@@ -1927,7 +1902,6 @@ impl eframe::App for ReaderApp {
         // ── Side-panels (rendered before CentralPanel) ──
         self.render_search_panel(ctx);
         self.render_annotations_panel(ctx);
-        self.render_ai_panel(ctx);
         self.render_settings_panel(ctx);
         self.render_notes_search(ctx);
         self.render_note_popup(ctx);

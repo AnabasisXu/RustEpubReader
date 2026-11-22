@@ -1738,22 +1738,6 @@ impl ReaderApp {
             })
             .unwrap_or_default();
 
-        // Selection right-click → ask the AI panel about it.
-        if self.text_selection.is_some() && !selected_text.is_empty() {
-            let mut ask_ai = false;
-            for entry in &block_galleys {
-                entry.response.context_menu(|ui| {
-                    if ui.button(self.i18n.t("ai.ask_selection")).clicked() {
-                        ask_ai = true;
-                        ui.close_menu();
-                    }
-                });
-            }
-            if ask_ai {
-                self.open_ai_with_selection(selected_text.clone());
-            }
-        }
-
         // 鈹€鈹€ Show floating selection toolbar (when selection finalized) 鈹€鈹€
         if let Some(sel) = &self.text_selection {
             if !sel.is_dragging && !selected_text.is_empty() {

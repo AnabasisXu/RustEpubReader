@@ -1,6 +1,5 @@
 //! Defines the UI components and modular structure for the desktop application.
 pub mod about;
-pub mod ai;
 pub mod annotations;
 pub(crate) mod appearance_linkage;
 pub(crate) mod appearance_transition;

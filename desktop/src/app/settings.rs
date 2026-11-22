@@ -68,12 +68,6 @@ pub(super) struct AppSettings {
     pub(super) title_font_scale: f32,
     #[serde(default)]
     pub(super) auto_scroll_speed: f32,
-    #[serde(default = "default_ai_base_url")]
-    pub(super) ai_base_url: String,
-    #[serde(default)]
-    pub(super) ai_api_key: String,
-    #[serde(default = "default_ai_model")]
-    pub(super) ai_model: String,
 }
 
 // A malformed new appearance field must not discard unrelated legacy settings.
@@ -174,9 +168,6 @@ impl AppSettings {
             text_indent: app.text_indent,
             title_font_scale: app.title_font_scale,
             auto_scroll_speed: app.auto_scroll_speed,
-            ai_base_url: app.ai_base_url.clone(),
-            ai_api_key: app.ai_api_key.clone(),
-            ai_model: app.ai_model.clone(),
         }
     }
 
@@ -225,25 +216,8 @@ impl AppSettings {
         app.text_indent = self.text_indent.min(4);
         app.title_font_scale = self.title_font_scale.clamp(1.0, 2.5);
         app.auto_scroll_speed = self.auto_scroll_speed.clamp(0.0, 200.0);
-        app.ai_base_url = if self.ai_base_url.trim().is_empty() {
-            default_ai_base_url()
-        } else {
-            self.ai_base_url.clone()
-        };
-        app.ai_api_key = self.ai_api_key.clone();
-        app.ai_model = if self.ai_model.trim().is_empty() {
-            default_ai_model()
-        } else {
-            self.ai_model.clone()
-        };
         app.i18n.set_language(Language::from_code(&self.language));
         // last_book_path/last_chapter applied in Default::default after call
     }
 }
 
-fn default_ai_base_url() -> String {
-    "https://api.openai.com/v1".into()
-}
-fn default_ai_model() -> String {
-    "gpt-4o-mini".into()
-}

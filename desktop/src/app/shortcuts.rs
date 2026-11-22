@@ -49,7 +49,6 @@ impl ReaderApp {
         let k_bookmark = self.shortcut("bookmark");
         let k_quick_open = self.shortcut("quick_open");
         let k_vim = self.shortcut("vim_mode");
-        let k_ai = self.shortcut("ai_panel");
         let k_font_smaller = self.shortcut("font_smaller");
         let k_font_larger = self.shortcut("font_larger");
 
@@ -180,19 +179,6 @@ impl ReaderApp {
         }
         // AI 面板必须能关闭：输入框持有键盘焦点时也要响应 Alt+L / Esc。
         if !blocked && self.note_popup.is_none() {
-            if ctx.input(|i| i.key_pressed(egui::Key::Escape)) && self.show_ai_panel {
-                self.show_ai_panel = false;
-                return;
-            }
-            if !k_ai.is_empty() && keymap::pressed(ctx, &k_ai) {
-                self.show_ai_panel = !self.show_ai_panel;
-                if self.show_ai_panel {
-                    self.show_annotations = false;
-                    self.show_settings = false;
-                    self.show_search = false;
-                }
-                return;
-            }
         }
         if blocked || ctx.wants_keyboard_input() || ctx.memory(|m| m.any_popup_open()) {
             return;

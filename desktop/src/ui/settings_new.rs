@@ -69,7 +69,6 @@ impl ReaderApp {
                             .show(ui, |ui| {
                                 self.render_settings_language(ui, palette.text);
                                 ui.add_space(12.);
-                                self.render_settings_ai(ui, palette.text, palette.muted);
                                 ui.add_space(12.);
                                 if ui
                                     .checkbox(
@@ -864,44 +863,6 @@ impl ReaderApp {
 
 impl ReaderApp {
     /// 快捷键映射 + 鼠标/Vim 开关。组合键写法：Ctrl+B、Alt+1、F2、Ctrl+Shift+J。
-    fn render_settings_ai(
-        &mut self,
-        ui: &mut egui::Ui,
-        heading_color: Color32,
-        subtitle_color: Color32,
-    ) {
-        ui.label(
-            egui::RichText::new(self.i18n.t("settings.ai_section"))
-                .size(13.)
-                .strong()
-                .color(heading_color),
-        );
-        ui.label(
-            egui::RichText::new(self.i18n.t("settings.ai_hint"))
-                .small()
-                .color(subtitle_color),
-        );
-        ui.label(self.i18n.t("settings.ai_base_url"));
-        ui.add(
-            super::design::text_edit(&mut self.ai_base_url)
-                .hint_text("https://api.openai.com/v1")
-                .desired_width(f32::INFINITY),
-        );
-        ui.label(self.i18n.t("settings.ai_api_key"));
-        ui.add(
-            super::design::text_edit(&mut self.ai_api_key)
-                .password(true)
-                .hint_text("sk-...")
-                .desired_width(f32::INFINITY),
-        );
-        ui.label(self.i18n.t("settings.ai_model"));
-        ui.add(
-            super::design::text_edit(&mut self.ai_model)
-                .hint_text("gpt-4o-mini")
-                .desired_width(f32::INFINITY),
-        );
-    }
-
     pub(crate) fn render_settings_shortcuts(&mut self, ui: &mut egui::Ui) {
         if ui
             .checkbox(&mut self.mouse_page_turn, "允许鼠标翻页（单击左右侧 / 边缘拖拽）")
@@ -925,7 +886,6 @@ impl ReaderApp {
             ("notes_page", "笔记页"),
             ("bookmark", "添加书签"),
             ("quick_open", "快速打开书籍"),
-            ("ai_panel", "问 AI"),
         ];
         for (name, label) in actions {
             let spec = self.shortcuts.get(name).cloned().unwrap_or_default();
