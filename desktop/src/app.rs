@@ -72,7 +72,7 @@ fn extend_unique_font_chain(target: &mut Vec<String>, fonts: impl IntoIterator<I
     }
 }
 
-fn default_data_dir() -> String {
+pub(crate) fn default_data_dir() -> String {
     let dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let _ = std::fs::create_dir_all(&dir);
     dir.to_string_lossy().to_string()
@@ -564,6 +564,8 @@ pub struct ReaderApp {
     pub title_font_scale: f32,
     // ── Search ──
     pub show_search: bool,
+    pub search_focus: bool,
+    pub fullscreen: bool,
     pub search_query: String,
     #[cfg(feature = "performance-checks")]
     pub(crate) reader_performance: Option<crate::performance::ReaderPerformance>,
@@ -723,6 +725,15 @@ impl ReaderApp {
     }
 
     pub(crate) fn from_data_dir(data_dir: String) -> Self {
+        Self::from_data_dir_options(data_dir, true)
+    }
+
+    /// Startup file on the command line must win over restoring the last book.
+    pub(crate) fn default_for_startup(has_startup_file: bool) -> Self {
+        Self::from_data_dir_options(default_data_dir(), !has_startup_file)
+    }
+
+    fn from_data_dir_options(data_dir: String, restore_last_book: bool) -> Self {
         let (library, library_error) = match Library::load_from(&data_dir) {
             Ok(library) => (library, None),
             Err(error) => (Library::default(), Some(error)),
@@ -882,6 +893,8 @@ impl ReaderApp {
             title_font_scale: default_title_font_scale(),
             // Search
             show_search: false,
+            search_focus: false,
+            fullscreen: false,
             search_query: String::new(),
             #[cfg(feature = "performance-checks")]
             reader_performance: None,
@@ -923,13 +936,15 @@ impl ReaderApp {
             settings.apply_to_app(&mut app);
             app.embedded_fonts_registered = false;
             app.pages_dirty = true;
-            // 自动恢复上次阅读的书籍
-            if let Some(ref path) = settings.last_book_path.clone() {
-                if std::path::Path::new(path).exists() {
-                    app.push_feedback_log(format!("[Init] restoring last book: {}", path));
-                    app.open_book_from_path(path, Some(settings.last_chapter));
-                } else {
-                    app.push_feedback_log(format!("[Init] last book not found: {}", path));
+            // 自动恢复上次阅读的书籍（命令行指定文件时不恢复）
+            if restore_last_book {
+                if let Some(ref path) = settings.last_book_path.clone() {
+                    if std::path::Path::new(path).exists() {
+                        app.push_feedback_log(format!("[Init] restoring last book: {}", path));
+                        app.open_book_from_path(path, Some(settings.last_chapter));
+                    } else {
+                        app.push_feedback_log(format!("[Init] last book not found: {}", path));
+                    }
                 }
             }
         } else {
@@ -1450,6 +1465,7 @@ impl eframe::App for ReaderApp {
         if let Some(probe) = self.native_corpus.as_mut() {
             probe.before_input(ctx);
         }
+        crate::ui::reader_block::activate_queued_title_font();
         self.sync_appearance(ctx);
         self.last_egui_ctx = Some(ctx.clone());
         self.advance_book_presentation();
@@ -1864,7 +1880,7 @@ impl eframe::App for ReaderApp {
                 egui::FontFamily::Name("ReaderTitleFont".into()),
                 reader_title_chain,
             );
-            crate::ui::reader_block::set_title_font_ready(true);
+            crate::ui::reader_block::queue_title_font();
 
             fonts
                 .families
@@ -1997,6 +2013,9 @@ impl eframe::App for ReaderApp {
             let rect = self.paging_page_rect.unwrap_or_else(|| ctx.screen_rect());
             self.reader_navigation
                 .finish_frame(ctx, rect, self.reader_bg_texture.clone());
+        }
+        if let Some(actual) = ctx.input(|i| i.viewport().fullscreen) {
+            self.fullscreen = actual;
         }
         let settings = AppSettings::from_app(self);
         if self.last_saved_settings.as_ref() != Some(&settings) {

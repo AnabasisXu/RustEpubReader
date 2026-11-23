@@ -51,6 +51,8 @@ pub(super) struct AppSettings {
     pub(super) scroll_mode: bool,
     #[serde(default)]
     pub(super) force_single_column: bool,
+    #[serde(default)]
+    pub(super) fullscreen: bool,
     pub(super) show_toc: bool,
     #[serde(default)]
     pub(super) language: String,
@@ -159,6 +161,7 @@ impl AppSettings {
             reader_bg_image_alpha: app.reader_bg_image_alpha,
             scroll_mode: app.scroll_mode,
             force_single_column: app.force_single_column,
+            fullscreen: app.fullscreen,
             show_toc: app.show_toc,
             language: app.i18n.preference().code().to_string(),
             last_book_path,
@@ -210,6 +213,7 @@ impl AppSettings {
         }
         app.scroll_mode = self.scroll_mode;
         app.force_single_column = self.force_single_column;
+        app.fullscreen = self.fullscreen;
         app.show_toc = self.show_toc;
         app.line_spacing = self.line_spacing.clamp(0.8, 2.5);
         app.para_spacing = self.para_spacing.clamp(0.0, 2.0);

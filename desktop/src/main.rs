@@ -163,6 +163,17 @@ fn startup_open_path_from_process_args() -> Option<PathBuf> {
     startup_open_path_from_args(std::env::args_os().skip(1))
 }
 
+/// Read only the fullscreen flag before the window exists so the first frame
+/// starts in the remembered state instead of resizing afterwards.
+fn startup_fullscreen() -> bool {
+    let path = PathBuf::from(app::default_data_dir()).join("settings.json");
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+        .and_then(|value| value.get("fullscreen").and_then(|flag| flag.as_bool()))
+        .unwrap_or(false)
+}
+
 fn main() -> eframe::Result {
     std::panic::set_hook(Box::new(|info| {
         let msg = format!("PANIC {}\n{}\n", info, std::backtrace::Backtrace::force_capture());
@@ -205,7 +216,8 @@ fn main() -> eframe::Result {
 
     let viewport = egui::ViewportBuilder::default()
         .with_inner_size([1200.0, 800.0])
-        .with_min_inner_size([600.0, 400.0]);
+        .with_min_inner_size([600.0, 400.0])
+        .with_fullscreen(startup_fullscreen());
     #[cfg(debug_assertions)]
     let viewport = if std::env::args().any(|arg| arg == "--ui-preview")
         && std::env::args().any(|arg| arg == "--ui-preview-small")
@@ -229,7 +241,7 @@ fn main() -> eframe::Result {
         options,
         Box::new(move |cc| {
             setup_fonts(&cc.egui_ctx);
-            let mut app = ReaderApp::default();
+            let mut app = ReaderApp::default_for_startup(startup_open_path.is_some());
             #[cfg(debug_assertions)]
             if std::env::args().any(|a| a == "--appearance-linkage-preview") {
                 app.show_appearance_linkage = true;

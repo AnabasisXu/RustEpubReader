@@ -24,10 +24,23 @@ fn record_selectable_galley(_ui: &egui::Ui, entry: BlockGalleyEntry) {
 
 thread_local! {
     static TITLE_FONT_READY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static TITLE_FONT_PENDING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
-pub(crate) fn set_title_font_ready(ready: bool) {
-    TITLE_FONT_READY.with(|value| value.set(ready));
+/// `Context::set_fonts` only becomes visible on the next frame. Registering a
+/// title family and painting with it in the same frame panics ("not bound"),
+/// so defer enabling it until the following update.
+pub(crate) fn queue_title_font() {
+    TITLE_FONT_READY.with(|value| value.set(false));
+    TITLE_FONT_PENDING.with(|value| value.set(true));
+}
+
+pub(crate) fn activate_queued_title_font() {
+    TITLE_FONT_PENDING.with(|pending| {
+        if pending.replace(false) {
+            TITLE_FONT_READY.with(|ready| ready.set(true));
+        }
+    });
 }
 
 fn title_font_name(body: &str) -> String {
