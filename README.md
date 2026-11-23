@@ -1,4 +1,4 @@
-# EPUB Reader（个人 fork）
+# EPUB Reader
 
 [![CI](https://github.com/AnabasisXu/RustEpubReader/actions/workflows/ci.yml/badge.svg)](https://github.com/AnabasisXu/RustEpubReader/actions/workflows/ci.yml)
 
@@ -43,10 +43,7 @@
 - `Ctrl+M`：添加/取消当前块书签，并显示「已添加书签 / 已取消书签」淡出提示。
 - `Ctrl+P`：VSCode 风格书籍选择器，输入过滤、`↑/↓` 选择、`Enter` 打开、`Esc` 关闭。
 
-### 1.6 关于
-- 作者/仓库改为 AnabasisXu；保留 Apache-2.0 与上游版权声明。
-
-### 1.7 相对原版的精简与强化
+### 1.6 相对原版的精简与强化
 相对原版做了大幅精简：移除多平台同步、阅读统计、TTS、翻译/词典、CSC、字体库导入、书籍分享/Portal、GitHub 登录、备份包等，桌面端只保留单机阅读。
 
 主要强化高亮、笔记与标签：统一备注弹窗、按高亮区间显示笔记、笔记页按书聚合/筛选/导出、标签增删与筛选、全文搜索与独立快捷键设置。
@@ -131,6 +128,4 @@ cargo build --release --target x86_64-pc-windows-gnu -p rust_epub_reader
 
 ## 6. 已知问题
 
-- `F11` 全屏后，下次启动不会恢复全屏（Windows 实测；已记录，待修）。
-- 尚未记忆最大化窗口；期望行为是记住最大化状态与窗口尺寸，下次启动恢复。
 - 悬停笔记按高亮字符区间命中，不做到逐字形。
