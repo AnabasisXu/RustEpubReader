@@ -52,7 +52,11 @@ pub(super) struct AppSettings {
     #[serde(default)]
     pub(super) force_single_column: bool,
     #[serde(default)]
-    pub(super) fullscreen: bool,
+    pub(super) window_pos: Option<[f32; 2]>,
+    #[serde(default)]
+    pub(super) window_size: Option<[f32; 2]>,
+    #[serde(default)]
+    pub(super) window_maximized: bool,
     pub(super) show_toc: bool,
     #[serde(default)]
     pub(super) language: String,
@@ -161,7 +165,9 @@ impl AppSettings {
             reader_bg_image_alpha: app.reader_bg_image_alpha,
             scroll_mode: app.scroll_mode,
             force_single_column: app.force_single_column,
-            fullscreen: app.fullscreen,
+            window_pos: app.window_pos,
+            window_size: app.window_size,
+            window_maximized: app.window_maximized,
             show_toc: app.show_toc,
             language: app.i18n.preference().code().to_string(),
             last_book_path,
@@ -190,7 +196,7 @@ impl AppSettings {
         app.reader_font_family = self.reader_font_family.clone();
         app.reader_cjk_font_family = self.reader_cjk_font_family.clone();
         app.reader_title_font_family = self.reader_title_font_family.clone();
-        app.reader_page_animation = self.reader_page_animation.clone();
+        app.reader_page_animation = "None".to_string();
         app.reader_page_animation_speed = self.reader_page_animation_speed.clamp(0.04, 0.40);
         app.reader_bg_image_path = self.reader_bg_image_path.clone();
         app.reader_bg_image_alpha = self.reader_bg_image_alpha.clamp(0.0, 1.0);
@@ -213,7 +219,9 @@ impl AppSettings {
         }
         app.scroll_mode = self.scroll_mode;
         app.force_single_column = self.force_single_column;
-        app.fullscreen = self.fullscreen;
+        app.window_pos = self.window_pos;
+        app.window_size = self.window_size;
+        app.window_maximized = self.window_maximized;
         app.show_toc = self.show_toc;
         app.line_spacing = self.line_spacing.clamp(0.8, 2.5);
         app.para_spacing = self.para_spacing.clamp(0.0, 2.0);

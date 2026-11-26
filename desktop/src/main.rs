@@ -163,21 +163,47 @@ fn startup_open_path_from_process_args() -> Option<PathBuf> {
     startup_open_path_from_args(std::env::args_os().skip(1))
 }
 
-/// Read only the fullscreen flag before the window exists so the first frame
-/// starts in the remembered state instead of resizing afterwards.
-fn startup_fullscreen() -> bool {
+#[derive(Default)]
+struct StartupWindow {
+    position: Option<[f32; 2]>,
+    size: Option<[f32; 2]>,
+    maximized: bool,
+}
+
+/// Read window geometry before the window exists so the first frame is already
+/// in the remembered state. Never restores fullscreen: fullscreen hides the
+/// window controls, and a failed restore leaves no way to close the window.
+fn startup_window_state() -> StartupWindow {
     let path = PathBuf::from(app::default_data_dir()).join("settings.json");
-    std::fs::read_to_string(path)
+    let Some(value) = std::fs::read_to_string(path)
         .ok()
         .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
-        .and_then(|value| value.get("fullscreen").and_then(|flag| flag.as_bool()))
-        .unwrap_or(false)
+    else {
+        return StartupWindow::default();
+    };
+    let pair = |key: &str| {
+        value.get(key).and_then(|item| {
+            Some([
+                item.get(0)?.as_f64()? as f32,
+                item.get(1)?.as_f64()? as f32,
+            ])
+        })
+    };
+    StartupWindow {
+        position: pair("window_pos"),
+        size: pair("window_size"),
+        maximized: value
+            .get("window_maximized")
+            .and_then(|flag| flag.as_bool())
+            .unwrap_or(false),
+    }
 }
 
 fn main() -> eframe::Result {
     std::panic::set_hook(Box::new(|info| {
         let msg = format!("PANIC {}\n{}\n", info, std::backtrace::Backtrace::force_capture());
-        let _ = std::fs::write("panic.log", msg);
+        let log = PathBuf::from(app::default_data_dir()).join("panic.log");
+        let _ = std::fs::write(log, msg);
     }));
     #[cfg(feature = "performance-checks")]
     let shelf_boot = (std::time::Instant::now(), reader_core::diagnostics::rss());
@@ -214,10 +240,14 @@ fn main() -> eframe::Result {
 
     let startup_open_path = startup_open_path_from_process_args();
 
-    let viewport = egui::ViewportBuilder::default()
-        .with_inner_size([1200.0, 800.0])
+    let startup_window = startup_window_state();
+    let mut viewport = egui::ViewportBuilder::default()
+        .with_inner_size(startup_window.size.unwrap_or([1200.0, 800.0]))
         .with_min_inner_size([600.0, 400.0])
-        .with_fullscreen(startup_fullscreen());
+        .with_maximized(startup_window.maximized);
+    if let Some(position) = startup_window.position {
+        viewport = viewport.with_position(egui::pos2(position[0], position[1]));
+    }
     #[cfg(debug_assertions)]
     let viewport = if std::env::args().any(|arg| arg == "--ui-preview")
         && std::env::args().any(|arg| arg == "--ui-preview-small")

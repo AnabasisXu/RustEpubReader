@@ -160,13 +160,6 @@ impl ReaderApp {
             }
             return;
         }
-        // F11 切换全屏；实际状态由每帧同步写回设置，下次启动恢复。
-        if ctx.input(|i| i.key_pressed(egui::Key::F11)) {
-            let fullscreen = ctx.input(|i| i.viewport().fullscreen.unwrap_or(false));
-            ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(!fullscreen));
-            return;
-        }
-
         // Ctrl+K 后 Ctrl+S（顺序也可颠倒）直接打开快捷键设置。
         if !blocked {
             let ctrl = ctx.input(|i| i.modifiers.ctrl || i.modifiers.command);

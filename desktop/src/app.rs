@@ -73,9 +73,32 @@ fn extend_unique_font_chain(target: &mut Vec<String>, fonts: impl IntoIterator<I
 }
 
 pub(crate) fn default_data_dir() -> String {
+    if let Ok(dir) = std::env::var("READER_DATA_DIR") {
+        let dir = PathBuf::from(dir);
+        let _ = std::fs::create_dir_all(&dir);
+        return dir.to_string_lossy().to_string();
+    }
+    #[cfg(windows)]
+    let dir = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(Path::to_path_buf))
+        .unwrap_or_else(|| PathBuf::from("."));
+    #[cfg(not(windows))]
     let dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let _ = std::fs::create_dir_all(&dir);
-    dir.to_string_lossy().to_string()
+    // A read-only install directory falls back to the user data directory.
+    let probe = dir.join(".reader-write-test");
+    let writable = std::fs::write(&probe, b"ok").is_ok();
+    let _ = std::fs::remove_file(&probe);
+    if writable {
+        dir.to_string_lossy().to_string()
+    } else {
+        let fallback = dirs::data_local_dir()
+            .unwrap_or_else(|| dir.clone())
+            .join("RustEpubReader");
+        let _ = std::fs::create_dir_all(&fallback);
+        fallback.to_string_lossy().to_string()
+    }
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -565,7 +588,10 @@ pub struct ReaderApp {
     // ── Search ──
     pub show_search: bool,
     pub search_focus: bool,
-    pub fullscreen: bool,
+    pub window_pos: Option<[f32; 2]>,
+    pub window_size: Option<[f32; 2]>,
+    pub window_maximized: bool,
+    last_window_sync: Option<std::time::Instant>,
     pub search_query: String,
     #[cfg(feature = "performance-checks")]
     pub(crate) reader_performance: Option<crate::performance::ReaderPerformance>,
@@ -788,7 +814,7 @@ impl ReaderApp {
             reader_cjk_font_family: default_sans(),
             reader_title_font_family: String::new(),
             title_font_search: String::new(),
-            reader_page_animation: "Realistic".to_string(),
+            reader_page_animation: "None".to_string(),
             reader_page_animation_speed: 0.14,
             reader_bg_image_path: None,
             reader_bg_image_alpha: 0.22,
@@ -894,7 +920,10 @@ impl ReaderApp {
             // Search
             show_search: false,
             search_focus: false,
-            fullscreen: false,
+            window_pos: None,
+            window_size: None,
+            window_maximized: false,
+            last_window_sync: None,
             search_query: String::new(),
             #[cfg(feature = "performance-checks")]
             reader_performance: None,
@@ -976,32 +1005,13 @@ impl ReaderApp {
 }
 
 impl ReaderApp {
-    pub fn trigger_page_animation_to(&mut self, target_page: usize, direction: f32) {
-        if self.reader_page_animation == "Realistic" && !self.scroll_mode {
-            self.request_curl_turn(direction >= 0., Some(target_page));
-            return;
-        }
-        if self.reader_page_animation == "None"
-            || self.scroll_mode
-            || target_page == self.current_page
-        {
-            self.current_page = target_page;
-            self.page_anim_progress = 1.0;
-            self.page_anim_from = target_page;
-            self.page_anim_to = target_page;
-            return;
-        }
-
-        self.page_anim_from = self.current_page;
-        self.page_anim_to = target_page;
-        self.page_anim_direction = if direction == 0.0 {
-            1.0
-        } else {
-            direction.signum()
-        };
-        self.page_anim_progress = 0.0;
-        self.page_anim_cross_chapter = false;
+    pub fn trigger_page_animation_to(&mut self, target_page: usize, _direction: f32) {
+        // Page-turn animation was removed; every navigation is instant.
         self.current_page = target_page;
+        self.page_anim_progress = 1.0;
+        self.page_anim_from = target_page;
+        self.page_anim_to = target_page;
+        self.page_anim_cross_chapter = false;
     }
 
     pub fn ensure_reader_bg_texture(&mut self, ctx: &egui::Context) {
@@ -2014,8 +2024,51 @@ impl eframe::App for ReaderApp {
             self.reader_navigation
                 .finish_frame(ctx, rect, self.reader_bg_texture.clone());
         }
-        if let Some(actual) = ctx.input(|i| i.viewport().fullscreen) {
-            self.fullscreen = actual;
+        let (outer, inner, maximized, monitor) = ctx.input(|i| {
+            let viewport = i.viewport();
+            (
+                viewport.outer_rect,
+                viewport.inner_rect,
+                viewport.maximized.unwrap_or(false),
+                viewport.monitor_size,
+            )
+        });
+        let maximized_changed = self.window_maximized != maximized;
+        let window_due = maximized_changed
+            || self
+                .last_window_sync
+                .is_none_or(|at| at.elapsed() >= std::time::Duration::from_secs(1));
+        self.window_maximized = maximized;
+        if window_due && !maximized {
+            if let Some(outer) = outer {
+                if outer.width() > 1.0 && outer.height() > 1.0 {
+                    self.window_pos = Some([outer.min.x, outer.min.y]);
+                }
+            }
+            if let Some(inner) = inner {
+                if inner.width() > 1.0 && inner.height() > 1.0 {
+                    self.window_size = Some([inner.width(), inner.height()]);
+                }
+            }
+            let offscreen = match (outer, monitor) {
+                (Some(outer), Some(monitor)) if outer.width() > 1.0 => {
+                    !outer.intersects(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        monitor,
+                    )) || outer.min.x > monitor.x - 80.0
+                        || outer.min.y > monitor.y - 80.0
+                }
+                _ => false,
+            };
+            if offscreen {
+                ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(egui::pos2(
+                    40.0, 40.0,
+                )));
+                self.window_pos = Some([40.0, 40.0]);
+            }
+        }
+        if window_due {
+            self.last_window_sync = Some(std::time::Instant::now());
         }
         let settings = AppSettings::from_app(self);
         if self.last_saved_settings.as_ref() != Some(&settings) {
@@ -2127,7 +2180,7 @@ mod first_reader_preferences_tests {
         let path = directory.path().to_string_lossy().into_owned();
         let fresh = ReaderApp::from_data_dir(path.clone());
         assert!(!fresh.scroll_mode);
-        assert_eq!(fresh.reader_page_animation, "Realistic");
+        assert_eq!(fresh.reader_page_animation, "None");
         assert!(!fresh.reader_introduction_seen);
         let mut saved = AppSettings::from_app(&fresh);
         saved.scroll_mode = true;
@@ -2136,7 +2189,7 @@ mod first_reader_preferences_tests {
         saved.save(&path).unwrap();
         let restored = ReaderApp::from_data_dir(path.clone());
         assert!(restored.scroll_mode && restored.reader_introduction_seen);
-        assert_eq!(restored.reader_page_animation, "Slide");
+        assert_eq!(restored.reader_page_animation, "None");
         let mut legacy = serde_json::to_value(saved).unwrap();
         legacy
             .as_object_mut()
@@ -2150,7 +2203,7 @@ mod first_reader_preferences_tests {
         .unwrap();
         let upgraded = ReaderApp::from_data_dir(path);
         assert!(upgraded.reader_introduction_seen && upgraded.scroll_mode);
-        assert_eq!(upgraded.reader_page_animation, "Slide");
+        assert_eq!(upgraded.reader_page_animation, "None");
         legacy["reader_introduction_seen"] = serde_json::json!("malformed");
         let decoded: AppSettings = serde_json::from_value(legacy).unwrap();
         assert_eq!(decoded.reader_introduction_seen, None);

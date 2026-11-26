@@ -346,43 +346,6 @@ impl ReaderApp {
             }
         });
 
-        {
-            // Page animation
-            ui.horizontal_wrapped(|ui| {
-                ui.label(self.i18n.t("settings.page_animation"));
-                for mode in ["Realistic", "Slide", "Cover", "None"] {
-                    let label = match mode {
-                        "Realistic" => self.i18n.t("settings.realistic"),
-                        "Slide" => self.i18n.t("settings.slide"),
-                        "Cover" => self.i18n.t("settings.cover"),
-                        _ => self.i18n.t("settings.none"),
-                    };
-                    if ui
-                        .selectable_label(self.reader_page_animation == mode, label)
-                        .clicked()
-                    {
-                        self.reader_page_animation = mode.to_string();
-                    }
-                }
-            });
-            if self.reader_page_animation != "None" {
-                ui.add_space(4.0);
-                ui.label(self.i18n.t("settings.animation_speed"));
-                super::design::settings_slider(
-                    ui,
-                    egui::Slider::new(&mut self.reader_page_animation_speed, 0.04..=0.40)
-                        .step_by(0.02)
-                        .custom_formatter(|value, _| format!("{:.0}%", value / 0.4 * 100.))
-                        .custom_parser(|text| {
-                            text.trim_end_matches('%')
-                                .trim()
-                                .parse::<f64>()
-                                .ok()
-                                .map(|percent| percent.clamp(10., 100.) / 100. * 0.4)
-                        }),
-                );
-            }
-        }
     }
     fn render_settings_fonts(&mut self, ui: &mut egui::Ui) {
         let enabled = self.css_policy != reader_core::epub::native::CssPolicy::Publisher;
