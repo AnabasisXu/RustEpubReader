@@ -381,9 +381,15 @@ impl ReaderApp {
             .book_config
             .as_ref()
             .map(|c| {
-                [c.bookmarks.len(), c.highlights.len()]
+                let mut tags = std::collections::BTreeSet::new();
+                for highlight in &c.highlights {
+                    for tag in &highlight.tags {
+                        tags.insert(tag.as_str());
+                    }
+                }
+                [c.bookmarks.len(), c.highlights.len(), tags.len()]
             })
-            .unwrap_or([0; 2]);
+            .unwrap_or([0; 3]);
         let tab = self
             .annotations_panel
             .tab
@@ -438,10 +444,15 @@ impl ReaderApp {
                     .iter()
                     .enumerate()
                     {
+                        let label = if *key == "标签" {
+                            "标签".to_owned()
+                        } else {
+                            self.i18n.t(key).to_string()
+                        };
                         if ui
                             .selectable_label(
                                 tab == index,
-                                format!("{} {}", self.i18n.t(key), counts[index]),
+                                format!("{label} {}", counts[index]),
                             )
                             .clicked()
                         {
